@@ -27,6 +27,20 @@ All dependencies are listed in `requirements.txt`. Install them with:
 pip install -r requirements.txt
 ```
 
+
+## Development container (recommended)
+
+This project includes a VS Code Dev Container for a reproducible development environment.
+
+To use it:
+1. Install Docker, VS Code, and the **Dev Containers** extension.
+2. Open the project in VS Code.
+3. Select **“Reopen in Container”** when prompted.
+
+Environment variables must still be provided via a `.env` file.
+
+
+
 ## Setup: Azure OpenAI and database credentials (.env)
 
 All secrets (keys, endpoints, DB connection string) are stored in a `.env` file that is not committed to Git.
