@@ -31,9 +31,6 @@ a.geom && ST_Transform(
 """.strip()
 
 
-
-
-
 def lookup_kommuneNr(name: str):
     url = "https://api.kartverket.no/kommuneinfo/v1/sok"
     params = {"knavn": name}
@@ -46,10 +43,6 @@ def lookup_kommuneNr(name: str):
  
 
     return fylkeNr
-
-
-
-
 
 def lookup_kommuneGeo(nr: str):
     # url = f"https://api.test.kartverket.no/kommuneinfo/v1/fylker/{nr}/omrade"
@@ -64,11 +57,6 @@ def lookup_kommuneGeo(nr: str):
  
 
     return fylkeNr
-
-
-
-
-
 
 def multipolygon_to_bbox(coords):
     minx = miny = float("inf")
