@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+
+
 import os
 from dotenv import load_dotenv
 
@@ -14,3 +18,4 @@ AZURE_OPENAI_DEPLOYMENT = os.getenv(
 AZURE_OPENAI_EMBEDDING_DEPLOYMENT = os.getenv(
     "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large"
 )
+
