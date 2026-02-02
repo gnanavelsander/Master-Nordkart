@@ -1,13 +1,14 @@
-from openai import OpenAI
+from openai import AzureOpenAI
 from config import (
     AZURE_OPENAI_KEY,
     AZURE_OPENAI_ENDPOINT,
-    AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
 )
 
-client = OpenAI(
+client = AzureOpenAI(
     api_key=AZURE_OPENAI_KEY,
-    base_url=f"{AZURE_OPENAI_ENDPOINT}/openai/v1/",
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_version="2024-02-15-preview",
 )
 
 def embed_text(text: str) -> list[float]:
@@ -16,8 +17,7 @@ def embed_text(text: str) -> list[float]:
         return []
 
     response = client.embeddings.create(
-        model=AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+        model=AZURE_OPENAI_EMBEDDING_DEPLOYMENT,  # deployment name
         input=text,
     )
-
     return response.data[0].embedding
