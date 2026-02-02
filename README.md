@@ -1,7 +1,7 @@
 # LLM–GIS Agent Proof of Concept (PoC)
 
 This project demonstrates how to integrate a Large Language Model (LLM) with a PostGIS spatial database to answer geographic questions using natural language.  
-The system uses Azure OpenAI ( `gpt-4o-mini` for deployment and 'text-embedding-3-large' is used to create embeddings) to translate user queries into SQL, create embeddings for retrieval and geospatial grounding, run those queries on PostGIS, and return the results as an interactive table.
+
 
 Example query:
 > “Find 100 residential houses within 200 meters of a river in Kristiansand.”

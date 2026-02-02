@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 class AppContext:
     db: Database
 
+
+
 @asynccontextmanager
 async def app_lifespan(server: FastMCP):
     logger.info("Starting server lifespan")
@@ -53,6 +55,7 @@ async def app_lifespan(server: FastMCP):
 
 # ---------- MCP server ----------
 mcp = FastMCP("postgis-server", lifespan=app_lifespan)
+
 
 # ---------- Tool ----------
 @mcp.tool(
