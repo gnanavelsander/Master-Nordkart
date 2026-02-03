@@ -1,6 +1,6 @@
 {
   "name": "llm-gis-poc",
-  "dockerComposeFile": ["../docker-compose.yml"],
+  "dockerComposeFile": ["../docker-compose.devcontainer.yml"],
   "service": "app",
   "workspaceFolder": "/workspaces/llm-gis-poc",
   "shutdownAction": "stopCompose",

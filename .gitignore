@@ -5,3 +5,4 @@ __pycache__/
 embeddings/layer_index.json
 ecp_c_s/test.py
 .vscode
+.venv

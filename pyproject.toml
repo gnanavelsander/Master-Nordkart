@@ -1,0 +1,25 @@
+[project]
+name = "llm-gis-poc"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "config==0.5.1",
+    "folium==0.20.0",
+    "ipykernel>=7.1.0",
+    "jupyter>=1.1.1",
+    "langchain==1.2.8",
+    "langchain-core==1.2.8",
+    "langchain-openai==1.1.7",
+    "log-utils==0.4.1",
+    "mcp==1.26.0",
+    "numpy>=2.0",
+    "openai==2.16.0",
+    "pandas==3.0.0",
+    "psycopg2-binary==2.9.11",
+    "pyproj>=3.7.2",
+    "python-dotenv==1.2.1",
+    "requests==2.32.5",
+    "shapely==2.1.2",
+]

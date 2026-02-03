@@ -1,13 +1,11 @@
 services:
-  app:
+  backend:
     build:
-      context: .
-      dockerfile: .devcontainer/Dockerfile
-    volumes:
-      - .:/workspaces/llm-gis-poc:cached
-    command: sleep infinity
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
     environment:
-      
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT}
       AZURE_OPENAI_KEY: ${AZURE_OPENAI_KEY}
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION}
@@ -18,6 +16,21 @@ services:
       POSTGRES_PASSWORD: gis
     depends_on:
       - db
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_URL=http://backend:8000/query
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
 
   db:
     image: postgis/postgis:16-3.4
@@ -33,3 +46,6 @@ services:
 
 volumes:
   pgdata:
+
+
+

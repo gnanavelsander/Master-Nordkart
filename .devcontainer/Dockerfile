@@ -1,24 +1,23 @@
 FROM mcr.microsoft.com/devcontainers/python:3.12
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    postgresql-client \
-    docker.io \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /workspaces/llm-gis-poc
 
-RUN pip install -U pip
 
 
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
-    docker-cli \
+    docker.io \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y nodejs
 
 
 
-COPY requirements.txt .
-RUN pip install -r requirements.txt
 
+RUN pip install -U pip uv
 
-
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
