@@ -1,20 +1,20 @@
 "use client";
 
-import { MapContainer, TileLayer, GeoJSON } from "react-leaflet";
-import { FeatureGroup } from "react-leaflet";
+import { MapContainer, TileLayer, GeoJSON as RLGeoJSON, FeatureGroup } from "react-leaflet";
 import { EditControl } from "react-leaflet-draw";
+import type { FeatureCollection, Polygon, MultiPolygon } from "geojson";
 
 type Props = {
-  geojson?: GeoJSON.FeatureCollection;
-  onDraw?: (geom: GeoJSON.Polygon | GeoJSON.MultiPolygon) => void;
+  geojson?: FeatureCollection;
+  onDraw?: (geom: Polygon | MultiPolygon) => void;
 };
 
 export default function MapView({ geojson, onDraw }: Props) {
   return (
     <MapContainer
-      center={[59.9139, 10.7522]} // Oslo (example)
+      center={[59.9139, 10.7522]}
       zoom={12}
-      style={{ height: 320, width: "100%" }}
+      className="h-[400px] w-full rounded-lg"
     >
       <TileLayer
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -32,14 +32,15 @@ export default function MapView({ geojson, onDraw }: Props) {
             marker: false,
             circlemarker: false,
           }}
-          onCreated={(e: any) => {
-            const gj = e.layer.toGeoJSON();
+          onCreated={(e: unknown) => {
+            const layer = (e as { layer: { toGeoJSON: () => any } }).layer;
+            const gj = layer.toGeoJSON();
             onDraw?.(gj.geometry);
           }}
         />
       </FeatureGroup>
 
-      {geojson && <GeoJSON data={geojson} />}
+      {geojson && <RLGeoJSON data={geojson} />}
     </MapContainer>
   );
 }
