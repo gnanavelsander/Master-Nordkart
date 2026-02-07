@@ -1,42 +1,73 @@
 # LLM–GIS Agent Proof of Concept (PoC)
 
-This project demonstrates how to integrate a Large Language Model (LLM) with a PostGIS spatial database to answer geographic questions using natural language.  
 
 
-Example query:
-> “Find 100 residential houses within 200 meters of a river in Kristiansand.”
 
-The goal is to show an end-to-end pipeline from:
-**Natural language → LLM planner → Structure plan → SQL → PostGIS → Visualization(map).**
+
+
+
+# Architecture
+Frontend: Next.js + React + Leaflet
+
+Backend: FastAPI
+
+LLM orchestration: Planner + SQL builder
+
+Execution: MCP client → PostGIS
+
+Output: GeoJSON + table + model comparison
+
 
 ---
 
 ## Installation
 
-#### 1.1 Clone the project
+
+#### Clone the project
 
 ```bash
 git clone https://github.com/MatinM-96/NordKart-MasterOppgave.git
 cd NordKart-MasterOppgave
 ```
-#### 1.2 Install requirements
 
-All dependencies are listed in `requirements.txt`. Install them with:
+#### Python dependencies
+Dependencies are managed via pyproject.toml + uv.lock.
+#####
+Install `uv`:
 
 ```bash
-pip install -r requirements.txt
+pip install uv
+```
+Install dependencies
+```bash
+uv sync
 ```
 
-## Setup: Azure OpenAI and database credentials (.env)
 
-All secrets (keys, endpoints, DB connection string) are stored in a `.env` file that is not committed to Git.
+## Development container (recommended)
 
-#### 2.1 Create `.env` file
+Docker Engine is required.  
+Install Docker Engine from: https://docs.docker.com/engine/
+
+This project includes a VS Code Dev Container for a reproducible environment.
+
+1. Install Docker, VS Code, and the **Dev Containers** extension
+2. Open the project in VS Code
+3. Select **“Reopen in Container”** when prompted
+
+Environment variables must be provided via a `.env` file.
+
+
+## Environment variables (.env)
+
+Secrets are stored in .env.     
+
+#### Create `.env` file
 
 In the project root (same folder as `requirements.txt`), create a file named `.env`:
 
 ```bash
-touch .env
+nano .env
 ```
 
 Open it in your editor and add:
@@ -48,19 +79,10 @@ PGCONN_STRING=postgresql://USERNAME:PASSWORD@HOST:5432/DATABASE
 ```
 
 
-#### 2.2 Load and test the environment variables
+## Frontend
 
-In a Python shell or Jupyter notebook:
+```bash
 
-```python
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-print("AZURE_OPENAI_ENDPOINT =", os.getenv("AZURE_OPENAI_ENDPOINT"))
-print("AZURE_OPENAI_KEY is set:", os.getenv("AZURE_OPENAI_KEY") is not None)
-print("PGCONN_STRING is set:", os.getenv("PGCONN_STRING") is not None)
+cd frontend
+npm run dev
 ```
-
----
-

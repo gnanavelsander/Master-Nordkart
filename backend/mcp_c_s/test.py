@@ -2,7 +2,22 @@ import asyncio
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from dotenv import load_dotenv
+from pathlib import Path
+
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+env_path = Path(__file__).resolve().parents[2] / ".env"
+loaded = load_dotenv(env_path, override=True)
+
+if not loaded:
+    raise RuntimeError(f".env not found at {env_path}")
+
+if not os.getenv("PGCONN_STRING"):
+    raise RuntimeError("PGCONN_STRING missing after loading .env")
+
 
 from mcp_c_s.mcp_client import query_postgis
 

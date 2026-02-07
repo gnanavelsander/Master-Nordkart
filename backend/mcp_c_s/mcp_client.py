@@ -31,18 +31,18 @@ async def mcp_call(tool_name: str, args: dict) -> str:
             return res.content[0].text if res.content else ""
 
 
-# async def query_postgis(sql: str) -> pd.DataFrame:
-#     try:
-#         json_str = await mcp_call("run_postgis_query", {"sql": sql})
+async def query_postgis(sql: str) -> pd.DataFrame:
+    try:
+        json_str = await mcp_call("run_postgis_query", {"sql": sql})
 
-#         if not json_str:
-#             return pd.DataFrame()
+        if not json_str:
+            return pd.DataFrame()
 
-#         if isinstance(json_str, str) and json_str.startswith("Error"):
-#             return pd.DataFrame()
+        if isinstance(json_str, str) and json_str.startswith("Error"):
+            return pd.DataFrame()
 
-#         data = json.loads(json_str)
-#         return pd.DataFrame(data)
+        data = json.loads(json_str)
+        return pd.DataFrame(data)
 
-#     except Exception:
-#         return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()

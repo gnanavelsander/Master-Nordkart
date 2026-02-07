@@ -4,7 +4,7 @@ from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 import asyncio
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from config import (
@@ -13,9 +13,9 @@ from config import (
     AZURE_OPENAI_DEPLOYMENT,
 )
 
-from tools.kartverketAPI import kommune_where_clause
-from tools.execute_postgis_query import execute_postgis_query
-from mcp_c_s.mcp_client import query_postgis
+from backend.tools.kartverketAPI import kommune_where_clause
+from backend.tools.execute_postgis_query import execute_postgis_query
+from backend.mcp_c_s.mcp_client import query_postgis
 
 
 

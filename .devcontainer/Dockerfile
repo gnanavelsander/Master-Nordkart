@@ -18,6 +18,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 
 RUN pip install -U pip uv
-
+RUN pip install -U pip npm 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen

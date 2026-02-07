@@ -5,22 +5,42 @@ import logging
 import sys
 import os
 
+from pathlib import Path
 
 
-project_root = os.path.dirname(os.path.abspath(__file__))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# project_root = os.path.dirname(os.path.abspath(__file__))
+# if project_root not in sys.path:
+#     sys.path.insert(0, project_root)
 
-parent_dir = os.path.dirname(project_root)
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
+# parent_dir = os.path.dirname(project_root)
+# if parent_dir not in sys.path:
+#     sys.path.insert(0, parent_dir)
 
+
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+env_path = Path(__file__).resolve().parents[2] / ".env"
+loaded = load_dotenv(env_path, override=True)
+
+if not loaded:
+    raise RuntimeError(f".env not found at {env_path}")
+
+if not os.getenv("PGCONN_STRING"):
+    raise RuntimeError("PGCONN_STRING missing after loading .env")
+
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
-from database import Database
+from backend.database import Database
 from config import PGCONN_STRING
-from log_utils import setup_logging
+from backend.log_utils import setup_logging
+
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -37,7 +57,7 @@ class AppContext:
 @asynccontextmanager
 async def app_lifespan(server: FastMCP):
     logger.info("Starting server lifespan")
-    conn_str = os.environ.get("PGCONN_STRING")
+    conn_str = os.environ.get("PGCONN_STRING") or PGCONN_STRING
     if not conn_str:
         logger.error("PGCONN_STRING not set")
         raise ValueError("PGCONN_STRING environment variable not set")
