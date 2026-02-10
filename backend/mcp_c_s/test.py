@@ -19,7 +19,7 @@ if not os.getenv("PGCONN_STRING"):
     raise RuntimeError("PGCONN_STRING missing after loading .env")
 
 
-from mcp_c_s.mcp_client import query_postgis
+from backend.mcp_c_s.mcp_client import query_postgis
 
 
 async def main():
