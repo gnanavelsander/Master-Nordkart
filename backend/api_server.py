@@ -18,15 +18,15 @@ app.add_middleware(
 )
 
 
-# @app.get("/")
-# def health():
-#     return {"ok": True}
+@app.get("/")
+def health():
+    return {"ok": True}
 
 
 
 
 @app.post("/query")
-async def query(payload: dict[str, Any]):
+async def run(payload: dict[str, Any]):
     question = payload["question"]
     models = payload["models"]
     mode = payload.get("mode", "parallel")
