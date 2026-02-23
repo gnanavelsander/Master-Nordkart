@@ -7,18 +7,21 @@ export type QueryRequest = {
   aoi?: GeoJSON.Polygon | GeoJSON.MultiPolygon;
 };
 
+// oppdatert — matcher nå hva backend faktisk returnerer
 export type ModelResult = {
-  model: string;
+  model_id: string;       // var "model"
   sql: string;
-  accuracy: number; // 0..1
-  errors: string[];
+  valid: boolean;         // var "accuracy: number"
+  attempts: number;       // nytt
+  latency_s: number;      // nytt
+  all_errors: string[];   // var "errors"
+  rows?: Record<string, any>[];     // nytt — rådata for tabell
+  geojson?: GeoJSON.FeatureCollection; // nytt — for kart
 };
 
 export type QueryResponse = {
   best_model: string;
   results: ModelResult[];
-  geojson?: GeoJSON.FeatureCollection;
-  table?: Record<string, any>[];
   execution_time_sec?: number;
 };
 

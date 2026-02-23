@@ -2,23 +2,26 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from typing import Any, Optional
-from tools.validate_sql import db
+from psycopg_pool import AsyncConnectionPool
 from Client.AzureChatOpenAI import run_all
+from firebase_admin import firestore
+from backend.firebase_admin_init import fs
+import os
 
+DATABASE_URL = os.getenv("PGCONN_STRING")
 
+# shared pool across all requests
+pool = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("App starting...")
-    yield
-    print("App shutting down...")
-    db.disconnect()
-
+    # open pool on startup, close on shutdown
+    global pool
+    async with AsyncConnectionPool(DATABASE_URL, min_size=2, max_size=10) as p:
+        pool = p
+        yield
 
 app = FastAPI(lifespan=lifespan)
-
-
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,13 +30,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/")
 def health():
     return {"ok": True}
-
-
-
 
 @app.post("/query")
 async def run(payload: dict[str, Any]):
@@ -42,24 +41,75 @@ async def run(payload: dict[str, Any]):
     mode = payload.get("mode", "parallel")
     aoi: Optional[dict[str, Any]] = payload.get("aoi")
 
-    
+    # run models sequentially or in parallel
     if mode == "sequential":
         results = []
         for m in models:
-            r = (await run_all(question, [m]))[0]
+            r = (await run_all(question, [m], pool))[0]
             results.append(r)
     else:
-        results = await run_all(question, models)   
+        results = await run_all(question, models, pool)
 
-    # filtrer exceptions til “errors”
+    # build clean result list, handle exceptions
     clean = []
     for r, m in zip(results, models):
         if isinstance(r, Exception):
-            clean.append({"model": m, "sql": "", "accuracy": 0.0, "errors": [str(r)]})
+            clean.append({
+                "model_id":   m,
+                "sql":        "",
+                "valid":      False,
+                "attempts":   0,
+                "latency_s":  0,
+                "all_errors": [str(r)],
+            })
         else:
-            clean.append({"model": r["model_id"], "sql": r["sql"], "accuracy": 0.0, "errors": []})
+            clean.append({
+                "model_id":   r["model_id"],
+                "sql":        r["sql"],
+                "valid":      r["valid"],
+                "attempts":   r["attempts"],
+                "latency_s":  r["latency_s"],
+                "all_errors": r["all_errors"],
+            })
 
-    return {"best_model": clean[0]["model"], "results": clean}
+    # store raw data and update metrics in Firestore
+    for r in clean:
+        try:
+            # store raw evaluation
+            fs.collection("evaluations").add({
+                "question":   question,
+                "model_id":   r["model_id"],
+                "valid":      r["valid"],
+                "attempts":   r["attempts"],
+                "latency_s":  r["latency_s"],
+                "sql":        r["sql"],
+                "all_errors": r["all_errors"],
+                "timestamp":  firestore.SERVER_TIMESTAMP,
+            })
 
+            # update aggregated metrics
+            ref = fs.collection("metrics").document(r["model_id"])
+            ref.set({
+                "total":         firestore.Increment(1),
+                "first_pass":    firestore.Increment(1 if r["attempts"] == 1 else 0),
+                "repaired":      firestore.Increment(1 if r["valid"] else 0),
+                "total_latency": firestore.Increment(r["latency_s"]),
+            }, merge=True)
 
+        except Exception as e:
+            print(f"Firestore error for {r['model_id']}: {e}")
 
+    # attach aggregated metrics per model
+    for r in clean:
+        doc = fs.collection("metrics").document(r["model_id"]).get()
+        data = doc.to_dict()
+        r["aggregated"] = data if data else None
+
+    # pick best model by fewest attempts then lowest latency
+    best = sorted(
+        [r for r in clean if r["valid"]],
+        key=lambda r: (r["attempts"], r["latency_s"])
+    )
+    best_model = best[0]["model_id"] if best else ""
+
+    return {"best_model": best_model, "results": clean}
