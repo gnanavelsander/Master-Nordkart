@@ -41,6 +41,9 @@ TOOLS AVAILABLE
    - Returns results as a formatted table
 ### COMMENT END
 
+
+
+3.validate_sql_explain
 ------------------------------------------------------------
 EXECUTION RULES
 ------------------------------------------------------------
@@ -107,51 +110,7 @@ public.skiloyepinfo_tabell
 public.annenruteinfo_tabell
 public.ruteinfo_punkt_posisjon
 
-------------------------------------------------------------
-SPATIAL OPERATION RULES
-------------------------------------------------------------
-Near / within X meters:
-- Use ST_DWithin(a.geom, b.geom, X)
 
-Intersect:
-- Use ST_Intersects(a.geom, b.geom)
-
-Within:
-- Use ST_Within(a.geom, b.geom)
-
-Contains:
-- Use ST_Contains(a.geom, b.geom)
-
-Touches:
-- Use ST_Touches(a.geom, b.geom)
-
-Overlaps:
-- Use ST_Overlaps(a.geom, b.geom)
-
-Nearest:
-- Use JOIN LATERAL with ORDER BY a.geom <-> b.geom LIMIT 1
-
-------------------------------------------------------------
-SQL PATTERNS
-------------------------------------------------------------
-
-Base select:
-SELECT
-  a.*,
-  ST_AsText(ST_Transform(a.geom, 4326)) AS wkt_geom
-FROM public.<layer> a
-WHERE <filters_or_TRUE>
-LIMIT <limit_or_100>;
-
-Distance join:
-SELECT
-  a.*,
-  ST_AsText(ST_Transform(a.geom, 4326)) AS wkt_geom
-FROM public.<layer> a
-JOIN public.<target_layer> b
-  ON ST_DWithin(a.geom, b.geom, <distance>)
-WHERE <filters_or_TRUE>
-LIMIT <limit_or_100>;
 
 ------------------------------------------------------------
 FINAL RULE

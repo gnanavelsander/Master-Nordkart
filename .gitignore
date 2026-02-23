@@ -30,7 +30,7 @@ coverage/
 # Package managers
 # ======================
 .pnp
-.pnp.*
+.pnp.*momo
 .yarn/*
 !.yarn/patches
 !.yarn/plugins

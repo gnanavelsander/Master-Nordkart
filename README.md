@@ -78,6 +78,17 @@ AZURE_OPENAI_KEY=YOUR_AZURE_OPENAI_KEY
 PGCONN_STRING=postgresql://USERNAME:PASSWORD@HOST:5432/DATABASE
 ```
 
+## Backend
+
+```bash
+
+cd backend
+uvicorn app:app --reload --port 8000
+```
+
+
+
+
 
 ## Frontend
 
