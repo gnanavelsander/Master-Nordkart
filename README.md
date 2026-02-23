@@ -83,7 +83,7 @@ PGCONN_STRING=postgresql://USERNAME:PASSWORD@HOST:5432/DATABASE
 ```bash
 
 cd backend
-uvicorn app:app --reload --port 8000
+uv run uvicorn api_server:app --reload --port 8000
 ```
 
 
