@@ -133,31 +133,66 @@ async def main():
             pool
         )
 
+    # save it to Firestore
     for r in results:
+
+        # Ignore results that raised an exception
         if isinstance(r, Exception):
             continue
 
+         # store raw data
+        
+        try:
+            fs.collection("evaluations").add({
+                "question": userInput,
+                "model_id": r["model_id"],
+                "valid": r["valid"],
+                "attempts": r["attempts"],
+                "latency_s": r["latency_s"],
+                "sql": r["sql"],
+                "all_errors": r["all_errors"],
+                "timestamp": firestore.SERVER_TIMESTAMP,
+            })
+        except Exception as e:
+            print(f"Failed to store evaluation: {e}")
 
 
+   
+         # update aggregert metrics
+        ref = fs.collection("metrics").document(r["model_id"])
+        ref.set({
+            "total":         firestore.Increment(1),
+            "first_pass":    firestore.Increment(1 if r["attempts"] == 1 else 0),
+            "repaired":      firestore.Increment(1 if r["valid"] else 0),
+            "total_latency": firestore.Increment(r["latency_s"]),
+        }, merge=True)
+
+       # Fetch updated metrics
+        doc = ref.get()
+        data = doc.to_dict()
+        
+        # Print model evaluation results 
+        print("\n" + "=" * 60)
+        print("MODEL:   ", r["model_id"])
+        print("VALID:   ", r["valid"])
+        print("ATTEMPTS:", r["attempts"])
+        print("LATENCY: ", r["latency_s"], "s")
+        print("SQL:\n",    r["sql"])
 
 
+        # Print updated aggregated metrics
+        if data:
+            total = data["total"]
+            print(f"\n--- Aggregert metrics ---")
+            print(f"Total kjøringer: {total}")
+            print(f"First-pass:      {round(data['first_pass'] / total * 100, 1)}%")
+            print(f"Repaired:        {round(data['repaired'] / total * 100, 1)}%")
+            print(f"Avg latency:     {round(data['total_latency'] / total, 2)}s")
 
         if not r["valid"]:
             print("ALL ERRORS:", r["all_errors"])
 
         print("\n" + "#" * 20)
-
-
-        print("LATENCY: ", r["latency_s"], "s")
-        print("\n" + "#" * 20,"\n")
-
-        print("SQL:\n",    r["sql"])
-        if not r["valid"]:
-            print("ALL ERRORS:", r["all_errors"])
-
-  
-
-
 
 if __name__ == "__main__":
     asyncio.run(main())
