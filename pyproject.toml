@@ -26,4 +26,5 @@ dependencies = [
   "tenacity==9.1.2",
   "pandas>=3.0.0",
   "psycopg[binary,pool]>=3.3.3",
+  "firebase-admin>=7.1.0",
 ]

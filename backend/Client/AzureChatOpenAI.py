@@ -13,6 +13,8 @@ from backend.tools.validate_sql import validate_sql_explain
 
 PROMPT = (Path(__file__).parent / "prompt.txt").read_text(encoding="utf-8")
 DATABASE_URL = os.getenv("PGCONN_STRING")
+from backend.firebase_admin_init import fs
+from firebase_admin import firestore
 
 
 def get_model(model_id: str, tools):
@@ -116,6 +118,11 @@ async def run_all(user_input: str, model_ids: list[str], pool: AsyncConnectionPo
     return await asyncio.gather(*tasks, return_exceptions=True)
 
 
+
+
+
+
+
 async def main():
     userInput = "Find 10 buildings."
 
@@ -127,15 +134,18 @@ async def main():
         )
 
     for r in results:
-        print("\n" + "=" * 60)
         if isinstance(r, Exception):
-            print("MODEL ERROR:", type(r).__name__, str(r))
             continue
-        print("MODEL:   ", r["model_id"],"\n")
 
-        print("VALID:   ", r["valid"])
 
-        print("ATTEMPTS:", r["attempts"])
+
+
+
+
+        if not r["valid"]:
+            print("ALL ERRORS:", r["all_errors"])
+
+        print("\n" + "#" * 20)
 
 
         print("LATENCY: ", r["latency_s"], "s")
@@ -144,6 +154,9 @@ async def main():
         print("SQL:\n",    r["sql"])
         if not r["valid"]:
             print("ALL ERRORS:", r["all_errors"])
+
+  
+
 
 
 if __name__ == "__main__":
