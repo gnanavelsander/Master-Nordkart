@@ -3,17 +3,29 @@
 import { useEffect, useState } from "react";
 import type { FeatureCollection, Geometry } from "geojson";
 import MapClient from "./components/MapClient";
+import ResultTable from "./ResultTable";
 
 export default function Page() {
   const [geojson, setGeojson] = useState<FeatureCollection | undefined>();
   const [aoi, setAoi] = useState<Geometry | null>(null);
   const [scrollActive, setScrollActive] = useState(false);
 
+
+
+
+
   /**making react hooks to send message from the user input */
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [lastResult, setLastResult] = useState<any>(null);
-const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
+  const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics" | "errors">("sql");
+
+  const [errors, setErrors] = useState<string[]>([]);
+
+
+
+
+
 
   // chat history — stored locally, not in Firestore
   const [messages, setMessages] = useState<{ role: "user" | "agent"; text: string; results?: any[] }[]>([]);
@@ -23,6 +35,10 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
 
   // table view per model
   const [tableModel, setTableModel] = useState<string | null>(null);
+
+
+
+
 
   /**take user input**/
   /**using react hooks */
@@ -49,22 +65,23 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
       });
       console.log("status", res.status);
 
+
+
+      //convert response to jason
       const data = await res.json();
 
-      // backend lagrer i Firestore — frontend bare viser resultater
+
       setLastResult(data.results);
 
-      // finn beste modell — lavest attempts, så lavest latency
-      const best = data.results
-        ?.filter((r: any) => r.valid)
-        ?.sort((a: any, b: any) =>
-          a.attempts !== b.attempts
-            ? a.attempts - b.attempts
-            : a.latency_s - b.latency_s
-        )?.[0];
+      setErrors(
+  data.results.flatMap((r: any) => r.all_errors ?? [])
+);      
 
-      // sett beste modell som aktiv på kart som default
-      if (best) {
+      // get best model
+      const best = data.results.find((r: any)=>r.model_id === data.best_model)
+
+        // Set best model as default on the map 
+       if (best) {
         setActiveModel(best.model_id);
         if (best.geojson) setGeojson(best.geojson);
       }
@@ -75,8 +92,8 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
         {
           role: "agent",
           text: best
-            ? `Fant resultater. Beste modell: ${best.model_id} (${best.latency_s}s, ${best.attempts} forsøk)`
-            : "Ingen modell klarte å generere gyldig SQL.",
+            ? `Results found. Best model: ${best.model_id} (${best.latency_s}s, ${best.attempts} forsøk)`
+            : "No model was able to generate valid SQL.",
           results: data.results,
         },
       ]);
@@ -85,23 +102,62 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
     }
   }
 
+
+
+
+
+
+
+
+
+
   const ALL_MODELS = ["gpt-35-turbo", "gpt-4.1-nano", "gpt-4", "gpt-4o", "GPT-4o-mini"];
-  const [selectedModels, setSelectedModels] = useState<string[]>(["gpt-35-turbo"]);
+  const [selectedModels, setSelectedModels] = useState<string[]>(["gpt-35-turbo", "gpt-4.1-nano", "gpt-4", "gpt-4o", "GPT-4o-mini"]);
+
+  const modelLength = selectedModels.length;
+
 
   function handleDraw(aoiGeo: Geometry) {
     setAoi(aoiGeo);
-  }
+  } 
 
-  // bytt aktiv modell på kart
+  //Updates the map with that model’s spatial result.
   function showOnMap(r: any) {
     setActiveModel(r.model_id);
     if (r.geojson) setGeojson(r.geojson);
   }
 
-  // vis tabell for en modell
-  function showTable(modelId: string) {
-    setTableModel((prev) => (prev === modelId ? null : modelId));
-  }
+ // states
+const [leftView, setLeftView] = useState<"map" | "table">("map");
+const [tableData, setTableData] = useState<any[]>([]);
+const [tableModelName, setTableModelName] = useState<string>("");
+
+// show tael function
+async function showTable(r: any) {
+    // always fetch — don't rely on cache
+    const res = await fetch("http://localhost:8000/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sql: r.sql }),
+    });
+
+    const data = await res.json();
+
+    if (data.error) {
+        console.error("execute error:", data.error);
+        return;
+    }
+
+    r.rows = data.rows;
+    setLastResult((prev: any) => [...prev]);
+    setTableData(data.rows);
+    setTableModelName(r.model_id);
+    setLeftView("table");
+}
+
+
+
+
 
   function toggleModel(model: string) {
     setSelectedModels((prev) =>
@@ -120,52 +176,62 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
         {/* map + chat */}
         <div className="flex flex-col items-center gap-6">
 
-          {/* MAP */}
-          <div className="w-[800px]">
-            <MapClient geojson={geojson} onDraw={handleDraw} />
-          </div>
+       {/* MAP or TABLE */}
+<div className="w-[800px]">
 
-          {/* TABLE — vises under kart når bruker klikker [Tabell] */}
-          {tableModel && lastResult && (
-            <div className="w-[800px] border border-gray-700 rounded-xl overflow-auto max-h-[300px]">
-              <table className="w-full text-xs text-white">
-                <thead className="bg-zinc-800 sticky top-0">
-                  <tr>
-                    {lastResult
-                      .find((r: any) => r.model_id === tableModel)
-                      ?.rows?.[0] &&
-                      Object.keys(
-                        lastResult.find((r: any) => r.model_id === tableModel).rows[0]
-                      ).map((col: string) => (
-                        <th key={col} className="px-3 py-2 text-left text-gray-400">
-                          {col}
-                        </th>
-                      ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {lastResult
-                    .find((r: any) => r.model_id === tableModel)
-                    ?.rows?.map((row: any, i: number) => (
-                      <tr key={i} className="border-t border-gray-800">
-                        {Object.values(row).map((val: any, j: number) => (
-                          <td key={j} className="px-3 py-2">
-                            {String(val)}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+    {/* back to map button */}
+    {leftView === "table" && (
+        <button
+            onClick={() => setLeftView("map")}
+            className="mb-2 px-3 py-1 text-xs border border-gray-600 text-gray-300 rounded hover:bg-zinc-700"
+        >
+            Back to map
+        </button>
+    )}
+
+    {leftView === "map" && (
+        <MapClient geojson={geojson} onDraw={handleDraw} />
+    )}
+
+    {leftView === "table" && (
+        <ResultTable
+            modelId={tableModelName}
+            rows={tableData}
+            onClose={() => setLeftView("map")}
+        />
+    )}
+</div>
+        
+
+
+        {/* TABLE — */}
+        {tableModel && lastResult && (
+            <ResultTable
+                modelId={tableModel}
+                rows={lastResult.find((r: any) => r.model_id === tableModel)?.rows ?? []}
+                onClose={() => setTableModel(null)}
+            />
+        )}
+
+
+
+
+
+
+
+
+
+
+
+
+
 
           {/* CHAT */}
           <aside className="w-[800px] rounded-xl border p-4 h-[400px] flex flex-col relative">
 
             {/* messages */}
-            <div className="flex-1 overflow-y-auto mb-4 space-y-3">
-              <p className="text-sm text-gray-600">What spatial query would you like to run?</p>
+<div className="flex-1 overflow-y-auto mb-4 space-y-3 w-full custom-scroll">
+                <p className="text-sm text-gray-600">What spatial query would you like to run?</p>
 
               {messages.map((msg, i) => (
                 <div key={i} className={msg.role === "user" ? "text-right" : "text-left"}>
@@ -183,6 +249,9 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
           <th className="text-left py-1 text-cyan-400 font-mono">Attempts</th>
           <th className="text-left py-1 text-cyan-400 font-mono">Latency</th>
           <th className="text-left py-1 text-cyan-400 font-mono">First-pass</th>
+
+
+
         </tr>
       </thead>
       <tbody>
@@ -203,6 +272,9 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
             <td className="py-1 text-cyan-300 font-mono">
               {r.attempts === 1 ? "Yes" : "No"}
             </td>
+      
+
+
           </tr>
         ))}
       </tbody>
@@ -213,7 +285,7 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
 ))}
 
 {loading && (
-  <p className="text-xs text-gray-500 animate-pulse">Running all models...</p>
+  <p className="text-xs text-gray-500 animate-pulse">{modelLength>1?"Running models...":"Running model ..."}</p>
 )}
 </div>
             {/* MODELS */}
@@ -286,17 +358,32 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
             >
               SQL
             </button>
+                     <button
+    onClick={() => setRightTab("metrics")}
+    className={`flex-1 p-2 text-sm ${rightTab === "metrics" ? "text-white" : "text-gray-400"}`}
+  >
+    Metrics
+  </button>
             <button
               onClick={() => setRightTab("queries")}
               className={`flex-1 p-2 text-sm ${rightTab === "queries" ? "text-white" : "text-gray-400"}`}
             >
               Queries
             </button>
+                 <button
+              onClick={() => setRightTab("errors")}
+              className={`flex-1 p-2 text-sm ${rightTab === "errors" ? "text-white" : "text-gray-400"}`}
+            >
+              Errors 
+            </button>
+            
+     
+     
       
           </div>
 
           {/* Content */}
-          <div className="flex-1 overflow-y-auto p-3">
+          <div className="flex-1 overflow-y-auto custom-scroll p-3">
 
             {rightTab === "sql" && (
               <div className="space-y-6">
@@ -318,12 +405,12 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
                       </div>
                     </div>
 
-                    {/* SQL */}
-                    <div className="flex-1 overflow-auto max-h-[120px]">
-                      <pre className="text-xs text-white whitespace-pre">
-                        {r.sql || r.all_errors?.join("\n")}
-                      </pre>
-                    </div>
+                 {/* SQL */}
+<div className="overflow-hidden">
+  <pre className="text-xs text-white whitespace-pre-wrap break-words w-full">
+    {r.sql || r.all_errors?.join("\n")}
+  </pre>
+</div>
 
                     {/* knapper */}
                     {r.valid && (
@@ -339,7 +426,7 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
                           Vis på kart
                         </button>
                         <button
-                          onClick={() => showTable(r.model_id)}
+                          onClick={() => showTable(r)}
                           className={`px-3 py-1 rounded text-xs border ${
                             tableModel === r.model_id
                               ? "bg-green-700 border-green-600 text-white"
@@ -369,7 +456,74 @@ const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics">("sql");
               </div>
             )}
 
-       
+       {rightTab === "metrics" && (
+  <div className="space-y-4">
+
+    {/* comparison table — current run */}
+
+
+    {/* aggregated per model */}
+    {lastResult?.map((r: any) => (
+      r.aggregated && r.aggregated.total > 1 && (
+        <div key={r.model_id} className="border border-gray-700 rounded-xl p-4">
+          <h3 className="text-xs font-semibold text-green-400 mb-3">
+            {r.model_id} — aggregated ({r.aggregated.total} runs)
+          </h3>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="text-gray-400">First-pass</div>
+            <div className="text-cyan-300 font-mono">
+              {((r.aggregated.first_pass / r.aggregated.total) * 100).toFixed(1)}%
+            </div>
+            <div className="text-gray-400">Repaired</div>
+            <div className="text-cyan-300 font-mono">
+              {((r.aggregated.repaired / r.aggregated.total) * 100).toFixed(1)}%
+            </div>
+            <div className="text-gray-400">Avg latency</div>
+            <div className="text-cyan-300 font-mono">
+              {(r.aggregated.total_latency / r.aggregated.total).toFixed(2)}s
+            </div>
+          </div>
+        </div>
+      )
+    ))}
+
+  </div>
+)}
+
+
+{rightTab === "errors" && (
+  <div className="space-y-4">
+
+    {/* errors per model — current run */}
+    {lastResult?.map((r: any) => (
+      <div key={r.model_id} className="border border-gray-700 rounded-xl p-4">
+        <h3 className="text-xs font-semibold text-green-400 mb-3">
+          {r.model_id}
+        </h3>
+
+        {r.all_errors && r.all_errors.length > 0 ? (
+          <div className="space-y-2">
+            {r.all_errors.map((err: string, i: number) => (
+              <div key={i} className="text-xs text-red-400 font-mono bg-zinc-900 px-3 py-2 rounded-lg">
+                Attempt {i + 1}: {err}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-gray-500">No errors</p>
+        )}
+
+      </div>
+    ))}
+
+  </div>
+)}
+
+
+
+
+
+
 
           </div>
         </div>

@@ -8,6 +8,11 @@ from firebase_admin import firestore
 from backend.firebase_admin_init import fs
 import os
 
+from backend.mcp_c_s.mcp_client import query_postgis
+
+
+
+
 DATABASE_URL = os.getenv("PGCONN_STRING")
 
 # shared pool across all requests
@@ -21,19 +26,32 @@ async def lifespan(app: FastAPI):
         pool = p
         yield
 
+
+
+#create  a fastapi instance
 app = FastAPI(lifespan=lifespan)
 
+
+
+#initiale middelware, which front orgin are allowed  
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+
+#test api
 @app.get("/")
 def health():
     return {"ok": True}
 
+
+
+
+#post methode
 @app.post("/query")
 async def run(payload: dict[str, Any]):
     question = payload["question"]
@@ -91,9 +109,10 @@ async def run(payload: dict[str, Any]):
             ref = fs.collection("metrics").document(r["model_id"])
             ref.set({
                 "total":         firestore.Increment(1),
-                "first_pass":    firestore.Increment(1 if r["attempts"] == 1 else 0),
-                "repaired":      firestore.Increment(1 if r["valid"] else 0),
+                "first_pass": firestore.Increment(1 if r["valid"] and r["attempts"] == 1 else 0),
+                "repaired": firestore.Increment(1 if r["valid"] and r["attempts"] > 1 else 0),
                 "total_latency": firestore.Increment(r["latency_s"]),
+                "success": firestore.Increment(1 if r["valid"] else 0),
             }, merge=True)
 
         except Exception as e:
@@ -113,3 +132,61 @@ async def run(payload: dict[str, Any]):
     best_model = best[0]["model_id"] if best else ""
 
     return {"best_model": best_model, "results": clean}
+
+
+
+
+import math
+import pandas as pd 
+import json
+
+def round_coords(coords, decimals=10):
+    if isinstance(coords[0], list):
+        return [round_coords(c, decimals) for c in coords]
+    return [round(c, decimals) for c in coords]
+
+
+def rows_to_geojson(rows: list[dict]) -> dict:
+    features = []
+    for row in rows:
+        geom_str = row.get("geojson_geom") or row.get("wkt_geom")
+        if not geom_str:
+            continue
+
+        try:
+            geom = json.loads(geom_str)
+            # round coordinates to 10 decimals
+            if "coordinates" in geom:
+                geom["coordinates"] = round_coords(geom["coordinates"])
+        except Exception:
+            continue
+
+        # all columns except geometry as properties
+        props = {k: v for k, v in row.items() if k not in ("geojson_geom", "wkt_geom", "geom")}
+
+        features.append({
+            "type": "Feature",
+            "geometry": geom,
+            "properties": props
+        })
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+@app.post("/execute")
+async def execute(payload: dict[str, Any]):
+    sql = payload.get("sql")
+    if not sql:
+        return {"error": "No SQL provided"}
+
+    try:
+        df = await query_postgis(sql)
+
+        # fast NaN handling — pandas handles it internally
+        rows = json.loads(df.to_json(orient="records"))
+        geojson = rows_to_geojson(rows)
+
+        return {"rows": rows, "geojson": geojson}
+    except Exception as e:
+        print(f"execute error: {e}")
+        return {"error": str(e)}
