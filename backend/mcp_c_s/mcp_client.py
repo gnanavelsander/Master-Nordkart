@@ -46,3 +46,14 @@ async def query_postgis(sql: str) -> pd.DataFrame:
 
     except Exception:
         return pd.DataFrame()
+    
+
+
+async def get_available_tables() -> str:
+    return await mcp_call("get_available_tables", {})
+
+async def get_table_schema(table_name: str) -> str:
+    return await mcp_call("get_table_schema", {"table_name": table_name})
+
+async def validate_sql_via_mcp(sql: str) -> str:
+    return await mcp_call("validate_sql_explain", {"sql": sql})

@@ -98,6 +98,67 @@ def run_postgis_query(
         return f"Error executing tool run_postgis_query: {str(e)}"
 
 
+@mcp.tool(
+    name="get_available_tables",
+    description="Get all available tables in the public schema"
+)
+def get_available_tables(ctx: Context[ServerSession, AppContext]) -> str:
+    try:
+        df = ctx.request_context.lifespan_context.db.query("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            ORDER BY table_name
+        """)
+        tables = df["table_name"].tolist()
+        return ", ".join(tables)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool(
+    name="get_table_schema",
+    description="Get column names and types for a given table"
+)
+def get_table_schema(ctx: Context[ServerSession, AppContext], table_name: str) -> str:
+    try:
+        df = ctx.request_context.lifespan_context.db.query("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+            AND table_name = %(table_name)s
+            ORDER BY ordinal_position
+        """, {"table_name": table_name})
+        if df.empty:
+            return f"Table '{table_name}' not found."
+        return "\n".join(f"{row.column_name}: {row.data_type}" for row in df.itertuples())
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool(
+    name="validate_sql_explain",
+    description="Validate SQL syntax using EXPLAIN. Returns ok or error message."
+)
+def validate_sql_explain(ctx: Context[ServerSession, AppContext], sql: str) -> str:
+    try:
+        ctx.request_context.lifespan_context.db.query(f"EXPLAIN (FORMAT JSON) {sql}")
+        return "ok"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 if __name__ == "__main__":

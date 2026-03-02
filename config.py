@@ -17,7 +17,7 @@ AZURE_MODEL_DEPLOYMENT = {
     "gpt-4": "gpt-4",
     "gpt-35-turbo": "gpt-35-turbo",
     "gpt-4.1-nano": "gpt-4.1-nano",
-    "GPT-4o-mini": "GPT-4o-mini"
+    "GPT-4o-mini": "GPT-4o-mini",
 }
 
 

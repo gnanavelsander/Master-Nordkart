@@ -1,12 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any
 from psycopg_pool import AsyncConnectionPool
 from Client.AzureChatOpenAI import run_all
 from firebase_admin import firestore
 from backend.firebase_admin_init import fs
 import os
+import json
 
 from backend.mcp_c_s.mcp_client import query_postgis
 
@@ -57,7 +58,7 @@ async def run(payload: dict[str, Any]):
     question = payload["question"]
     models = payload["models"]
     mode = payload.get("mode", "parallel")
-    aoi: Optional[dict[str, Any]] = payload.get("aoi")
+    #aoi: Optional[dict[str, Any]] = payload.get("aoi")
 
     # run models sequentially or in parallel
     if mode == "sequential":
@@ -136,57 +137,22 @@ async def run(payload: dict[str, Any]):
 
 
 
-import math
-import pandas as pd 
-import json
-
-def round_coords(coords, decimals=10):
-    if isinstance(coords[0], list):
-        return [round_coords(c, decimals) for c in coords]
-    return [round(c, decimals) for c in coords]
 
 
-def rows_to_geojson(rows: list[dict]) -> dict:
-    features = []
-    for row in rows:
-        geom_str = row.get("geojson_geom") or row.get("wkt_geom")
-        if not geom_str:
-            continue
-
-        try:
-            geom = json.loads(geom_str)
-            # round coordinates to 10 decimals
-            if "coordinates" in geom:
-                geom["coordinates"] = round_coords(geom["coordinates"])
-        except Exception:
-            continue
-
-        # all columns except geometry as properties
-        props = {k: v for k, v in row.items() if k not in ("geojson_geom", "wkt_geom", "geom")}
-
-        features.append({
-            "type": "Feature",
-            "geometry": geom,
-            "properties": props
-        })
-
-    return {"type": "FeatureCollection", "features": features}
-
-
+#post metode to retrive sql result
 @app.post("/execute")
 async def execute(payload: dict[str, Any]):
     sql = payload.get("sql")
+
     if not sql:
         return {"error": "No SQL provided"}
 
     try:
+        
         df = await query_postgis(sql)
-
-        # fast NaN handling — pandas handles it internally
         rows = json.loads(df.to_json(orient="records"))
-        geojson = rows_to_geojson(rows)
-
-        return {"rows": rows, "geojson": geojson}
+        return {"rows": rows}
+    
     except Exception as e:
         print(f"execute error: {e}")
         return {"error": str(e)}
