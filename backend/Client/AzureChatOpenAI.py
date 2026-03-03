@@ -2,23 +2,29 @@ import sys, os, time, asyncio
 from pathlib import Path
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
-from psycopg_pool import AsyncConnectionPool
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from config import AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_MODEL_DEPLOYMENT
-from backend.tools.kartverketAPI import kommune_where_clause
 
-from backend.tools.postgisTools import (execute_postgis_query, tool_validate_sql, tool_get_available_tables, tool_get_table_schema)
+from backend.tools.longChainTools import (execute_postgis_query,
+                                           tool_validate_sql,
+                                           tool_get_available_tables, 
+                                           tool_get_table_schema, 
+                                           kommune_where_clause)
+
+
+
 
 PROMPT = (Path(__file__).parent / "prompt.txt").read_text(encoding="utf-8")
-DATABASE_URL = os.getenv("PGCONN_STRING")
+#DATABASE_URL = os.getenv("PGCONN_STRING")
 from backend.firebase_admin_init import fs
 from firebase_admin import firestore
 
 from dataclasses import dataclass
 from typing import Optional
+from dataclasses import asdict
 
 
 
@@ -27,7 +33,7 @@ from typing import Optional
 
 
 
-#declre obejct to store paramkn,,,n,j
+#declre obejct to store paramkn
 @dataclass
 class ModelParams:
     temperature: float = 0.0
@@ -35,21 +41,37 @@ class ModelParams:
     timeout: int = 60
     max_retries: int = 2
 
-    top_p: Optional[float] = None
-    presence_penalty: Optional[float] = None
-    frequency_penalty: Optional[float] = None
     seed: Optional[int] = None
 
     tool_choice:str = "auto"
 
 
+@dataclass
+class AgentResult:
+    sql: str
+    iterations: int
+    tool_calls: list
+    valid: bool
+    agent_validated: bool
+    all_errors: list[str]
+
+
+
+@dataclass
+class PipelineResult:
+    model_id: str
+    final_sql: str | None
+    valid: bool
+    attempts: int
+    latency_s: float
+    all_errors: list[str]
+    params: ModelParams  
+    agent: Optional[AgentResult] = None  
 
 
 
 
 # initialize model
-
-
 def get_model(model_id: str, tools, params: Optional[ModelParams] = None):
     params = params or ModelParams()
 
@@ -89,7 +111,6 @@ def get_model(model_id: str, tools, params: Optional[ModelParams] = None):
 
 #cach the parameters, to reuse the same pamras and inilialize once, to avoid creating hhtp clint each time
 
-
 _model_cache = {}
 
 def get_model_cached (model_id, tools, params):
@@ -98,11 +119,11 @@ def get_model_cached (model_id, tools, params):
     params =  params or ModelParams()
 
     key =(model_id,tuple(sorted(params.__dict__.items())), tuple(t.name for t in tools))
-
-
+    
     if key not in _model_cache: 
         model = get_model(model_id, tools=tools, params=params)
         _model_cache[key] = model 
+
         return model 
     else:
         return _model_cache[key]
@@ -119,8 +140,10 @@ def get_model_cached (model_id, tools, params):
 
 
 
-
 async def agentGis(userInput: str, model_id: str = "gpt-4o-mini", params: Optional[ModelParams] = None):
+
+
+
     #deifine tools 
     tools = [kommune_where_clause, execute_postgis_query, tool_get_available_tables, tool_validate_sql, tool_get_table_schema]
 
@@ -137,7 +160,7 @@ async def agentGis(userInput: str, model_id: str = "gpt-4o-mini", params: Option
     #store tool-call logs 
     tool_calls_log = []
 
-
+    all_errors = []
 
     iterations = 0
     last_sql = None
@@ -149,13 +172,14 @@ async def agentGis(userInput: str, model_id: str = "gpt-4o-mini", params: Option
 
         iterations += 1 
 
-    
+        #send message to llm and wait to get the respons
         ai = await model.ainvoke(msgs)
         msgs.append(ai)
+
+        # extract sql from llm
+        #check the content exist and not white speace 
         if ai.content and ai.content.strip():
             last_sql = ai.content.strip()
-
-        print("her er ai result iteration:", iterations, "for model: ",model_id, ai, "\n")
 
 
 
@@ -173,20 +197,20 @@ async def agentGis(userInput: str, model_id: str = "gpt-4o-mini", params: Option
 
             agent_called_validate = (last_validated_sql is not None)
 
-            return {
-                "sql": current_sql,
-                "iterations": iterations,
-                "tool_calls": tool_calls_log,
-                "valid": validated,
-                "agent_validated": agent_called_validate,
-                "all_errors": [] if validated else ["Final SQL was not validated"],
-            }
-
+            return AgentResult(
+                    sql=current_sql,
+                    iterations=iterations,
+                    tool_calls=tool_calls_log,
+                    valid=validated,
+                    agent_validated=agent_called_validate,
+                    all_errors=[] if validated else ["Final SQL was not validated"],
+                )
         iteration_tools = []
+
         for tc in ai.tool_calls:
             tool = tool_map[tc["name"]]
             try:
-                result = await tool.ainvoke(tc["args"])
+                result = await tool.ainvoke(tc["args"])  # unnecessary to run all tools again; may only need validation
 
              #track which sql was validated and wether validation was ok 
 
@@ -199,6 +223,8 @@ async def agentGis(userInput: str, model_id: str = "gpt-4o-mini", params: Option
                     "args":   tc["args"],
                     "result": str(result),
                 })
+
+                #reconsider this 
                 msgs.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
             except Exception as e:
                 iteration_tools.append({
@@ -226,15 +252,14 @@ async def agentGis(userInput: str, model_id: str = "gpt-4o-mini", params: Option
             ]
 
 
-
-    return {
-        "sql":        last_sql or "Max iterations reached.",
-        "iterations": iterations,
-        "tool_calls": tool_calls_log,
-        "valid":      False,
-        "all_errors": all_errors or ["max iteration is reachd"],
-    }
-
+    return AgentResult(
+        sql=last_sql or "Max iterations reached.",
+        iterations=iterations,
+        tool_calls=tool_calls_log,
+        valid=False,
+        agent_validated=False,
+        all_errors=all_errors or ["Max iterations reached"],
+    )
 
 
 
@@ -256,151 +281,222 @@ async def sqlPipeline(question: str, model_id: str, max_attempts: int = 3,  para
     while attempts < max_attempts:
         attempts += 1
         result = await agentGis(current_prompt, model_id=model_id, params= params)
-        sql = result["sql"]
+        sql = result.sql
 
         #return the results if sql is valid
-        if result["valid"]:
-            return {
-                "model_id":   model_id,
-                "sql":        sql,
-                "attempts":   attempts,
-                "valid":      True,
-                "all_errors": all_errors,
-                "latency_s":  round(time.time() - t0, 3),
-                "tool_calls": result["tool_calls"],
-                "iterations": result["iterations"],
-            }
+        if result.valid:
+            return PipelineResult(
+                model_id=model_id,
+                final_sql=sql,
+                valid=True,
+                attempts=attempts,
+                latency_s=round(time.time() - t0, 3),
+                all_errors=all_errors, #which iteration gave which error
+                params=params or ModelParams(),
+                agent= result
+            )
         
         #if the result is not validate it restert the agent with a repair prompt that include the sql and errors
+        all_errors.extend(result.all_errors)
 
-        all_errors.extend(result["all_errors"])
+      #  all_errors.extend(result["all_errors"])
         current_prompt = f"""
 You are fixing a broken PostGIS SQL query.
 Original question: {question}
 SQL that failed: {sql}
-Errors: {result["all_errors"]}
+Errors: {result.all_errors}
 Rewrite the SQL to fix the errors. Return only the corrected SQL.
 """
-
-    return {
-        "model_id":   model_id,
-        "sql":        result["sql"] if result else None,
-        "attempts":   attempts,
-        "valid":      False,
-        "all_errors": all_errors,
-        "latency_s":  round(time.time() - t0, 3),
-        "tool_calls": result["tool_calls"] if result else [],
-        "iterations": result["iterations"] if result else 0,
-
-    }
+    return PipelineResult(
+        model_id=model_id,
+        final_sql=sql,
+        valid=False,
+        attempts=attempts,
+        latency_s=round(time.time() - t0, 3),
+        all_errors=all_errors,
+        params=params or ModelParams(),
+        agent= result
+    )
 
 
 
 
-
-
-
+#optimize runn_all 
 async def run_all(user_input: str, model_ids: list[str],  params: Optional[ModelParams] = None):
     tasks = [sqlPipeline(user_input, model_id, params=params ) for model_id in model_ids]
     return await asyncio.gather(*tasks, return_exceptions=True)
 
 
 
-
-
-async def main():
-    userInput = "find 10 building in grimstad."
-
-    params =  ModelParams(temperature=0, timeout=60, max_tokens=2000)
+def _short(s: str, n: int = 120) -> str:
+    s = (s or "").replace("\n", " ").strip()
+    return s if len(s) <= n else s[: n - 3] + "..."
 
 
 
 
+def _dedup_keep_order(xs: list[str]) -> list[str]:
+    seen, out = set(), []
+    for x in xs or []:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
+def _print_summary_table(query: str, results: list):
+    print("\n" + "#" * 100)
+    print("QUERY:")
+    print(query)
+    print("#" * 100 + "\n")
 
-    results = await run_all(userInput, ["gpt-35-turbo", "gpt-4.1-nano", "gpt-4", "gpt-4o", "gpt-4o-mini"], params= params)
-
-    not_working = []
+    print(f"{'MODEL':<15} {'VALID':<6} {'ATT':<4} {'LAT(s)':<8} {'ERROR'}")
+    print("-" * 100)
 
     for r in results:
         if isinstance(r, Exception):
-            not_working.append(str(r))
+            print(f"{'ERROR':<15} {'False':<6} {'-':<4} {'-':<8} {_short(str(r), 200)}")
             continue
 
-        try:
-            # # store to Firestore
-            # fs.collection("evaluations").add({
-            #     "question":   userInput,
-            #     "model_id":   r["model_id"],
-            #     "valid":      r["valid"],
-            #     "attempts":   r["attempts"],
-            #     "latency_s":  r["latency_s"],
-            #     "sql":        r["sql"],
-            #     "all_errors": r["all_errors"],
-            #     "tools_log":  r.get("tool_calls", []),
-            #     "timestamp":  firestore.SERVER_TIMESTAMP,
-            # })
+        err = "; ".join(_dedup_keep_order(r.all_errors))
+        print(f"{r.model_id:<15} {str(r.valid):<6} {str(r.attempts):<4} {r.latency_s:<8.3f} {err}")
 
-            # # update aggregated metrics
-            # ref = fs.collection("metrics").document(r["model_id"])
-            # ref.set({
-            #     "total":         firestore.Increment(1),
-            #     "first_pass":    firestore.Increment(1 if r["attempts"] == 1 else 0),
-            #     "repaired":      firestore.Increment(1 if r["valid"] else 0),
-            #     "total_latency": firestore.Increment(r["latency_s"]),
-            # }, merge=True)
 
-            # doc = ref.get()
-            # data = doc.to_dict()
 
-            # # print results
-            # print("\n" + "=" * 60)
-            # print("MODEL:   ", r["model_id"])
-            # print("VALID:   ", r["valid"])
-            # print("ATTEMPTS:", r["attempts"])
-            # print("LATENCY: ", r["latency_s"], "s")
 
-            # # tool call log
-            # if r.get("tool_calls"):
-            #     print("\n--- Tool calls ---")
-            #     for entry in r["tool_calls"]:
-            #         for t in entry["tools"]:
-            #             if t["tool"] == "tool_validate_sql":
-            #                 result = t.get("result", "")
-            #                 if result == "ok":
-            #                     print(f"  Iteration {entry['iteration']}: tool_validate_sql → ✓ ok")
-            #                 else:
-            #                     print(f"  Iteration {entry['iteration']}: tool_validate_sql → ✗ {result}")
-            #             else:
-            #                 print(f"  Iteration {entry['iteration']}: {t['tool']}({t['args']})")
-            # else:
-            #     print("\n--- No tool calls ---")
 
-            # print("ITERATIONS:", r.get("iterations", "N/A"))
 
-            # # aggregated metrics
-            # if data:
-            #     total = data["total"]
-            #     print(f"\n--- Metrics ---")
-            #     print(f"Total runs:  {total}")
-            #     print(f"First-pass:  {round(data['first_pass'] / total * 100, 1)}%")
-            #     print(f"Repaired:    {round(data['repaired'] / total * 100, 1)}%")
-            #     print(f"Avg latency: {round(data['total_latency'] / total, 2)}s")
 
-            # if not r["valid"]:
-            #     print("ALL ERRORS:", r["all_errors"])
 
-            print("SQL:\n", r["sql"])
-            print("\n" + "#" * 20)
+def _print_tool_logs(pr: "PipelineResult"):
+    a = pr.agent
+    if not a:
+        print("No agent logs.\n")
+        return
 
-        except Exception as e:
-            print(f"Failed to store evaluation: {e}")
+    print(f"AGENT ITERATIONS: {a.iterations}")
+    print(f"AGENT VALID:      {a.valid}")
+    print(f"AGENT VALIDATED:  {a.agent_validated}")
 
-    if not_working:
-        print("\n--- Not working ---")
-        for m in not_working:
-            print(f"  {m}")
+    if a.all_errors:
+        print("AGENT ERRORS:")
+        for e in a.all_errors:
+            print(f"  - {e}")
 
+    if not a.tool_calls:
+        print("\n--- No tool calls ---\n")
+        return
+
+    print("\n--- Tool calls ---")
+    for entry in a.tool_calls:
+        it = entry.get("iteration")
+        tools = entry.get("tools", [])
+        for t in tools:
+            tool = t.get("tool")
+            args = t.get("args", {})
+            res  = t.get("result", "")
+            if tool == "tool_validate_sql":
+                ok = (str(res).strip().lower() == "ok")
+                print(f"  Iteration {it}: tool_validate_sql - {'ok' if ok else '✗ ' + _short(str(res), 200)}")
+            else:
+                print(f"  Iteration {it}: {tool}({args}) → {_short(str(res), 220)}")
+    print()
+
+
+
+
+
+
+
+
+def _print_details(results: list):
+    print("\n" + "-" * 100)
+    print("DETAILS PER MODEL")
+    print("-" * 100 + "\n")
+
+    for r in results:
+        if isinstance(r, Exception):
+            print("[ERROR]")
+            print(str(r))
+            print()
+            continue
+
+        print(f"[{r.model_id}]")
+        print(f"VALID:    {r.valid}")
+        print(f"ATTEMPTS: {r.attempts}")
+        print(f"LATENCY:  {r.latency_s:.3f}s")
+
+        if r.all_errors:
+            print("ALL ERRORS:")
+            for e in _dedup_keep_order(r.all_errors):
+                print(f"  - {e}")
+        else:
+            print("ALL ERRORS: (none)")
+
+        _print_tool_logs(r)
+
+        print("FINAL SQL:")
+        print(r.final_sql or "(no final_sql)")
+        print("\n" + "#" * 30 + "\n")
+
+async def store_run_firestore(query: str, params: ModelParams, results: list):
+
+
+    #make  collection 
+    run_ref = fs.collection("evaluation_runs").document()
+    run_ref.set({
+        "query": query,
+        "timestamp": firestore.SERVER_TIMESTAMP,
+        "params": asdict(params),
+    })
+
+    batch = fs.batch()
+    for r in results:
+        if isinstance(r, Exception):
+            doc = {
+                "model_id": "ERROR",
+                "valid": False,
+                "attempts": -1,
+                "latency_s": None,
+                "final_sql": None,
+                "all_errors": [str(r)],
+                "agent": None,
+            }
+            mref = run_ref.collection("models").document("ERROR")
+            batch.set(mref, doc)
+            continue
+
+        doc = asdict(r)
+        # Make sure errors are deduped (optional)
+        doc["all_errors"] = _dedup_keep_order(doc.get("all_errors") or [])
+        if doc.get("agent") and doc["agent"].get("all_errors"):
+            doc["agent"]["all_errors"] = _dedup_keep_order(doc["agent"]["all_errors"])
+
+        mref = run_ref.collection("models").document(r.model_id)
+        batch.set(mref, doc)
+
+    batch.commit()
+    return run_ref.id
+
+async def main():
+    params = ModelParams(temperature=0, timeout=60, max_tokens=2000)
+
+    queries = "find 100 buildings in grimstad."
+
+    
+
+
+
+
+
+    model_ids = ["gpt-35-turbo", "gpt-4.1-nano", "gpt-4", "gpt-4o", "gpt-4o-mini"]
+
+    results = await run_all(queries, model_ids, params=params)
+
+    _print_summary_table(queries, results)
+    _print_details(results)
+
+    run_id = await store_run_firestore(queries, params, results)
+    print(f"Saved to Firestore: evaluation_runs/{run_id}\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
