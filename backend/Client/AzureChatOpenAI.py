@@ -91,12 +91,7 @@ def get_model(model_id: str, tools, params: Optional[ModelParams] = None):
     }
 
       # add only if it has a value 
-    if params.top_p is not None:
-        kwargs["top_p"] = params.top_p
-    if params.presence_penalty is not None:
-        kwargs["presence_penalty"] = params.presence_penalty
-    if params.frequency_penalty is not None:
-        kwargs["frequency_penalty"] = params.frequency_penalty
+ 
     if params.seed is not None:
         kwargs["seed"] = params.seed
 
@@ -267,7 +262,7 @@ async def agentGis(userInput: str, model_id: str = "gpt-4o-mini", params: Option
 
 
 
-async def sqlPipeline(question: str, model_id: str, max_attempts: int = 3,  params: Optional[ModelParams] = None  ):
+async def sqlPipeline(question: str, model_id: str, max_attempts: int = 3,  params: Optional[ModelParams] = None ):
     attempts = 0
     all_errors = []
     result = None
@@ -309,19 +304,20 @@ Rewrite the SQL to fix the errors. Return only the corrected SQL.
 """
     return PipelineResult(
         model_id=model_id,
-        final_sql=sql,
+        final_sql=False,
         valid=False,
         attempts=attempts,
         latency_s=round(time.time() - t0, 3),
         all_errors=all_errors,
         params=params or ModelParams(),
         agent= result
+        
     )
 
 
 
 
-#optimize runn_all 
+#optimize runn_all (later)
 async def run_all(user_input: str, model_ids: list[str],  params: Optional[ModelParams] = None):
     tasks = [sqlPipeline(user_input, model_id, params=params ) for model_id in model_ids]
     return await asyncio.gather(*tasks, return_exceptions=True)
@@ -403,11 +399,6 @@ def _print_tool_logs(pr: "PipelineResult"):
 
 
 
-
-
-
-
-
 def _print_details(results: list):
     print("\n" + "-" * 100)
     print("DETAILS PER MODEL")
@@ -438,11 +429,12 @@ def _print_details(results: list):
         print(r.final_sql or "(no final_sql)")
         print("\n" + "#" * 30 + "\n")
 
+
 async def store_run_firestore(query: str, params: ModelParams, results: list):
 
 
     #make  collection 
-    run_ref = fs.collection("evaluation_runs").document()
+    run_ref = fs.collection("evaluation_runsLongChain").document()
     run_ref.set({
         "query": query,
         "timestamp": firestore.SERVER_TIMESTAMP,
@@ -466,7 +458,8 @@ async def store_run_firestore(query: str, params: ModelParams, results: list):
             continue
 
         doc = asdict(r)
-        # Make sure errors are deduped (optional)
+        # Make sure errors are deduped  
+
         doc["all_errors"] = _dedup_keep_order(doc.get("all_errors") or [])
         if doc.get("agent") and doc["agent"].get("all_errors"):
             doc["agent"]["all_errors"] = _dedup_keep_order(doc["agent"]["all_errors"])

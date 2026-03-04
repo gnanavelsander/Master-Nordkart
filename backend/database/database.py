@@ -27,11 +27,11 @@ class Database:
             self.conn.close()
             logger.info("Database disconnected")
     
-    def query(self, sql: str) -> pd.DataFrame:
+    def query(self, sql: str, params = None) -> pd.DataFrame:
         try:
             logger.info(f"Executing query: {sql[:100]}...")
             with self.conn.cursor() as cur:
-                cur.execute(sql)
+                cur.execute(sql, params)
                 rows = cur.fetchall()
                 cols = [desc[0] for desc in cur.description]
             logger.info(f"Query returned {len(rows)} rows")
