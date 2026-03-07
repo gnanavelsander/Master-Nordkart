@@ -30,30 +30,33 @@ async def mcp_call(tool_name: str, args: dict) -> str:
             res = await session.call_tool(tool_name, arguments=args)
             return res.content[0].text if res.content else ""
 
-
-async def query_postgis(sql: str) -> pd.DataFrame:
+async def query_postgis(sql: str, databaseName: str = "007workshop") -> pd.DataFrame:
     try:
-        json_str = await mcp_call("run_postgis_query", {"sql": sql})
+        json_str = await mcp_call(
+            "run_postgis_query",
+            {
+                "sql": sql,
+                "databaseName": databaseName
+            }
+        )
 
         if not json_str:
             return pd.DataFrame()
 
         if isinstance(json_str, str) and json_str.startswith("Error"):
-            return pd.DataFrame()
+            return []
 
         data = json.loads(json_str)
-        return pd.DataFrame(data)
+        return data
 
     except Exception:
         return pd.DataFrame()
-    
 
+async def get_available_tables(databaseName: str = "007workshop") -> str:
+    return await mcp_call("get_available_tables", {"databaeNme": databaseName})
 
-async def get_available_tables() -> str:
-    return await mcp_call("get_available_tables", {})
+async def get_table_schema(table_name: str, databaseName: str = "007workshop") -> str:
+    return await mcp_call("get_table_schema", {"table_name": table_name, "databaseName": databaseName})
 
-async def get_table_schema(table_name: str) -> str:
-    return await mcp_call("get_table_schema", {"table_name": table_name})
-
-async def validate_sql_via_mcp(sql: str) -> str:
-    return await mcp_call("validate_sql_explain", {"sql": sql})
+async def validate_sql_via_mcp(sql: str, databaseName: str = "007workshop") -> str:
+    return await mcp_call("validate_sql_explain", {"sql": sql, "databaseName": databaseName})

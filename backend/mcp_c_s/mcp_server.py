@@ -46,30 +46,35 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+workshop = os.environ.get("PGCONN_STRING") or PGCONN_STRING
+
+
+
 @dataclass
 class AppContext:
     db: PoolManager
-    conn_id: str
+    conn_ids: dict[str, str]
 
 
+
+
+
+#create app contex manger
 @asynccontextmanager
 async def app_lifespan(server: FastMCP):
-    logger.info("Starting server lifespan")
-    conn_str = os.environ.get("PGCONN_STRING") or PGCONN_STRING
-    if not conn_str:
-        logger.error("PGCONN_STRING not set")
-        raise ValueError("PGCONN_STRING environment variable not set")
 
-    logger.info("Initializing database connection")
     db = PoolManager()
-    conn_id = await db.connect(conn_str)
+
+    conn_ids = {
+        "007workshop": await db.connect(os.environ.get("PGCONN_STRING") or PGCONN_STRING)
+    }
 
     try:
         logger.info("Server ready, yielding app context")
-        yield AppContext(db=db, conn_id=conn_id)
+        yield AppContext(db=db, conn_ids=conn_ids)
     finally:
         logger.info("Cleaning up database connection")
-        await db.disconnect(conn_id)
+        await db.close_all()
 
 
 
@@ -82,15 +87,17 @@ mcp = FastMCP("postgis-server", lifespan=app_lifespan)
     name="run_postgis_query",
     description="Execute SQL query on PostGIS database and return results as JSON"
 )
-def run_postgis_query(
+async def run_postgis_query(
     ctx: Context[ServerSession, AppContext],
-    sql: str
+    sql: str,
+    databaseName: str
 ) -> str:
     """Execute a SQL query and return results as JSON string."""
     logger.info(f"Tool called with SQL: {sql[:100]}...")
     try:
-        df = ctx.request_context.lifespan_context.db.query(sql)
-        result = df.to_dict(orient="records")
+        conID = ctx.request_context.lifespan_context.conn_ids[databaseName]
+        result = await ctx.request_context.lifespan_context.db.query(conID, sql)
+
         logger.info(f"Returning {len(result)} records")
         return json.dumps(result, default=str)
     except Exception as e:
@@ -102,16 +109,25 @@ def run_postgis_query(
     name="get_available_tables",
     description="Get all available tables in the public schema"
 )
-def get_available_tables(ctx: Context[ServerSession, AppContext]) -> str:
+async def get_available_tables(
+    ctx: Context[ServerSession, AppContext],
+    databaeNme: str
+) -> str:
     try:
-        df = ctx.request_context.lifespan_context.db.query("""
+        conID = ctx.request_context.lifespan_context.conn_ids[databaeNme]
+
+        rows = await ctx.request_context.lifespan_context.db.query(
+            conID,
+            """
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
             ORDER BY table_name
-        """)
-        tables = df["table_name"].tolist()
+            """
+        )
+        tables = [row["table_name"] for row in rows]
         return ", ".join(tables)
+
     except Exception as e:
         return f"Error: {e}"
 
@@ -120,18 +136,34 @@ def get_available_tables(ctx: Context[ServerSession, AppContext]) -> str:
     name="get_table_schema",
     description="Get column names and types for a given table"
 )
-def get_table_schema(ctx: Context[ServerSession, AppContext], table_name: str) -> str:
+async def get_table_schema(
+    ctx: Context[ServerSession, AppContext],
+    table_name: str,
+    databaseName: str
+) -> str:
     try:
-        df = ctx.request_context.lifespan_context.db.query("""
+        conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
+
+        rows = await ctx.request_context.lifespan_context.db.query(
+            conn_id,
+            """
             SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_schema = 'public'
-            AND table_name = %(table_name)s
+              AND table_name = $1
             ORDER BY ordinal_position
-        """, {"table_name": table_name})
-        if df.empty:
+            """,
+            (table_name,)
+        )
+
+        if not rows:
             return f"Table '{table_name}' not found."
-        return "\n".join(f"{row.column_name}: {row.data_type}" for row in df.itertuples())
+
+        return "\n".join(
+            f"{row['column_name']}: {row['data_type']}"
+            for row in rows
+        )
+
     except Exception as e:
         return f"Error: {e}"
 
@@ -140,25 +172,20 @@ def get_table_schema(ctx: Context[ServerSession, AppContext], table_name: str) -
     name="validate_sql_explain",
     description="Validate SQL syntax using EXPLAIN. Returns ok or error message."
 )
-def validate_sql_explain(ctx: Context[ServerSession, AppContext], sql: str) -> str:
+async def validate_sql_explain(
+    ctx: Context[ServerSession, AppContext],
+    sql: str,
+    databaseName: str
+) -> str:
     try:
-        ctx.request_context.lifespan_context.db.query(f"EXPLAIN (FORMAT JSON) {sql}")
+        conID = ctx.request_context.lifespan_context.conn_ids[databaseName]
+        await ctx.request_context.lifespan_context.db.query(
+            conID,
+            f"EXPLAIN (FORMAT JSON) {sql}"
+        )
         return "ok"
     except Exception as e:
         return f"Error: {e}"
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 if __name__ == "__main__":

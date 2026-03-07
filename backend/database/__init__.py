@@ -1,3 +1,3 @@
-from .database import Database
+from .database import PoolManager
 
-__all__ = ["Database"]
+__all__ = ["PoolManager"]
