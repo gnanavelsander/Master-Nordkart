@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT))
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
-from backend.database import Database
+from backend.database import PoolManager
 from config import PGCONN_STRING
 from backend.log_utils import setup_logging
 
@@ -46,12 +46,10 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
-
-
 @dataclass
 class AppContext:
-    db: Database
-
+    db: PoolManager
+    conn_id: str
 
 
 @asynccontextmanager
@@ -61,15 +59,17 @@ async def app_lifespan(server: FastMCP):
     if not conn_str:
         logger.error("PGCONN_STRING not set")
         raise ValueError("PGCONN_STRING environment variable not set")
-    
+
     logger.info("Initializing database connection")
-    db = Database(conn_str).connect()
+    db = PoolManager()
+    conn_id = await db.connect(conn_str)
+
     try:
         logger.info("Server ready, yielding app context")
-        yield AppContext(db=db)
+        yield AppContext(db=db, conn_id=conn_id)
     finally:
         logger.info("Cleaning up database connection")
-        db.disconnect()
+        await db.disconnect(conn_id)
 
 
 

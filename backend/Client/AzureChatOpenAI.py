@@ -41,7 +41,6 @@ class ModelParams:
     timeout: int = 60
     max_retries: int = 2
 
-    seed: Optional[int] = None
 
     tool_choice:str = "auto"
 
@@ -90,10 +89,6 @@ def get_model(model_id: str, tools, params: Optional[ModelParams] = None):
         "max_retries": params.max_retries,
     }
 
-      # add only if it has a value 
- 
-    if params.seed is not None:
-        kwargs["seed"] = params.seed
 
 
     return AzureChatOpenAI(**kwargs).bind_tools(tools, tool_choice=params.tool_choice)
@@ -473,7 +468,7 @@ async def store_run_firestore(query: str, params: ModelParams, results: list):
 async def main():
     params = ModelParams(temperature=0, timeout=60, max_tokens=2000)
 
-    queries = "find 100 buildings in grimstad."
+    queries = "Identify 100 flood zone polygons in Kristiansand that intersect forest productivity areas and are within 300 meters of footpaths."
 
     
 
