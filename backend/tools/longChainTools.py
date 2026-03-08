@@ -1,51 +1,56 @@
 from langchain.tools import tool
 import requests
-
-
+import json
 import sys
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backend.mcp_c_s.mcp_client import (
-    get_available_tables,    
+    get_available_tables,
     get_table_schema,
     validate_sql_via_mcp,
     query_postgis,
-    
 )
 
-@tool
-async def execute_postgis_query(sql: str) -> str:
-    """Execute a PostGIS SQL query via MCP and return JSON (string)."""
 
-    df = await query_postgis(sql)
+@tool
+async def execute_postgis_query(sql: str, databaseName: str = "007workshop") -> str:
+    """Execute a PostGIS SQL query via MCP and return JSON (string)."""
+    rows = await query_postgis(sql, databaseName=databaseName)
 
     # Return JSON string, not a pretty table (safer + smaller)
-    return df.head(5).to_json(orient="records", force_ascii=False)
-
-
+    return json.dumps(rows[:5], ensure_ascii=False, default=str)
 
 
 @tool
-async def tool_get_available_tables() -> str:
+async def tool_get_available_tables(databaseName: str = "007workshop") -> str:
     """Get all available tables in the PostGIS database."""
-    return await get_available_tables()
+    return await get_available_tables(databaseName=databaseName)
+
 
 @tool
-async def tool_get_table_schema(table_name: str) -> str:
+async def tool_get_table_schema(
+    table_name: str,
+    databaseName: str = "007workshop",
+    schemaName: str | None = None,
+) -> str:
     """Get column names and data types for a specific table."""
-    return await get_table_schema(table_name)
+    return await get_table_schema(
+        table_name=table_name,
+        databaseName=databaseName,
+        schemaName=schemaName,
+    )
+
 
 @tool
-async def tool_validate_sql(sql: str) -> str:
+async def tool_validate_sql(
+    sql: str,
+    databaseName: str = "007workshop",
+) -> str:
     """Validate SQL syntax using EXPLAIN. Returns ok or error message."""
-    return await validate_sql_via_mcp(sql)
-
-
-
+    return await validate_sql_via_mcp(sql, databaseName=databaseName)
 
 
 @tool
@@ -91,7 +96,3 @@ a.geom && ST_Transform(
   25833
 )
 """.strip()
-
-
-
-

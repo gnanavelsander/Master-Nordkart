@@ -46,7 +46,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
-workshop = os.environ.get("PGCONN_STRING") or PGCONN_STRING
+#workshop = os.environ.get("PGCONN_STRING") or PGCONN_STRING
 
 
 
@@ -54,7 +54,6 @@ workshop = os.environ.get("PGCONN_STRING") or PGCONN_STRING
 class AppContext:
     db: PoolManager
     conn_ids: dict[str, str]
-
 
 
 
@@ -105,41 +104,50 @@ async def run_postgis_query(
         return f"Error executing tool run_postgis_query: {str(e)}"
 
 
+
+
+
+
+
 @mcp.tool(
     name="get_available_tables",
-    description="Get all available tables in the public schema"
+    description="Get available tables from the public schema"
 )
 async def get_available_tables(
     ctx: Context[ServerSession, AppContext],
-    databaeNme: str
+    databaseName: str,
 ) -> str:
     try:
-        conID = ctx.request_context.lifespan_context.conn_ids[databaeNme]
+        conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
 
         rows = await ctx.request_context.lifespan_context.db.query(
-            conID,
+            conn_id,
             """
-            SELECT table_name
+            SELECT table_schema, table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
-            ORDER BY table_name
+            ORDER BY table_schema, table_name
             """
         )
-        tables = [row["table_name"] for row in rows]
+
+        tables = [f"{row['table_schema']}.{row['table_name']}" for row in rows]
+
         return ", ".join(tables)
 
     except Exception as e:
         return f"Error: {e}"
 
 
+
+
 @mcp.tool(
     name="get_table_schema",
-    description="Get column names and types for a given table"
+    description="Get column names and types for a given table in the public schema"
 )
 async def get_table_schema(
     ctx: Context[ServerSession, AppContext],
     table_name: str,
-    databaseName: str
+    databaseName: str,
 ) -> str:
     try:
         conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
@@ -166,6 +174,14 @@ async def get_table_schema(
 
     except Exception as e:
         return f"Error: {e}"
+
+
+
+
+
+
+
+
 
 
 @mcp.tool(

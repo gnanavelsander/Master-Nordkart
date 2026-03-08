@@ -27,7 +27,7 @@ from typing import Optional
 from dataclasses import asdict
 
 
-
+from backend.mcp_c_s.mcp_client import MCPClientManager
 
 
 
@@ -466,25 +466,33 @@ async def store_run_firestore(query: str, params: ModelParams, results: list):
     return run_ref.id
 
 async def main():
-    params = ModelParams(temperature=0, timeout=60, max_tokens=2000)
+    try:
+        params = ModelParams(temperature=0, timeout=60, max_tokens=2000)
 
-    queries = "Identify 100 flood zone polygons in Kristiansand that intersect forest productivity areas and are within 300 meters of footpaths."
+        queries = "Identify 100 flood zone polygons in Kristiansand that intersect forest productivity areas and are within 300 meters of footpaths."
 
-    
-
-
-
+        
 
 
-    model_ids = ["gpt-35-turbo", "gpt-4.1-nano", "gpt-4", "gpt-4o", "gpt-4o-mini"]
 
-    results = await run_all(queries, model_ids, params=params)
 
-    _print_summary_table(queries, results)
-    _print_details(results)
 
-    run_id = await store_run_firestore(queries, params, results)
-    print(f"Saved to Firestore: evaluation_runs/{run_id}\n")
+        model_ids = ["gpt-35-turbo", "gpt-4.1-nano", "gpt-4", "gpt-4o", "gpt-4o-mini"]
+
+        results = await run_all(queries, model_ids, params=params)
+
+        _print_summary_table(queries, results)
+        _print_details(results)
+
+        run_id = await store_run_firestore(queries, params, results)
+        print(f"Saved to Firestore: evaluation_runs/{run_id}\n")
+
+
+    finally:
+      
+        MCPClientManager.close
+
 
 if __name__ == "__main__":
     asyncio.run(main())
+    MCPClientManager.close
