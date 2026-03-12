@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT))
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 from backend.database import PoolManager
-from config import PGCONN_STRING
+from config import PGCONN_STRING, PGCONN_MATRIKKEL
 from backend.log_utils import setup_logging
 
 
@@ -62,18 +62,19 @@ class AppContext:
 @asynccontextmanager
 async def app_lifespan(server: FastMCP):
 
-    db = PoolManager()
+    poolManager = PoolManager()
 
     conn_ids = {
-        "007workshop": await db.connect(os.environ.get("PGCONN_STRING") or PGCONN_STRING)
+        "007workshop": await poolManager.connect(PGCONN_STRING),
+        "matrikkelenbygning": await poolManager.connect(PGCONN_MATRIKKEL)
     }
 
     try:
         logger.info("Server ready, yielding app context")
-        yield AppContext(db=db, conn_ids=conn_ids)
+        yield AppContext(db=poolManager, conn_ids=conn_ids)
     finally:
         logger.info("Cleaning up database connection")
-        await db.close_all()
+        await poolManager.close_all()
 
 
 
@@ -109,13 +110,152 @@ async def run_postgis_query(
 
 
 
+# @mcp.tool(
+#     name="get_available_tables",
+#     description="Get available tables from the public schema"
+# )
+# async def get_available_tables(
+#     ctx: Context[ServerSession, AppContext],
+#     databaseName: str,
+# ) -> str:
+#     try:
+#         conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
+
+#         rows = await ctx.request_context.lifespan_context.db.query(
+#             conn_id,
+#             """
+#          SELECT table_schema, table_name
+#                 FROM information_schema.tables
+#                 WHERE table_type = 'BASE TABLE'
+#                 AND table_schema NOT IN ('pg_catalog', 'information_schema')
+#                 ORDER BY table_schema, table_name;
+#             """
+#         )
+
+#         tables = [f"{row['table_schema']}.{row['table_name']}" for row in rows]
+
+#         return ", ".join(tables)
+
+#     except Exception as e:
+#         return f"Error: {e}"
+
+
+
+# @mcp.tool(
+#     name="get_table_schema",
+#     description="Get column names and types for a given table"
+# )
+# async def get_table_schema(
+#     ctx: Context[ServerSession, AppContext],
+#     table_name: str,
+#     databaseName: str,
+#     schemaName: str | None = None,
+# ) -> str:
+#     try:
+#         conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
+
+#         rows = await ctx.request_context.lifespan_context.db.query(
+#             conn_id,
+#             """
+#             SELECT column_name, data_type
+#             FROM information_schema.columns
+#             WHERE table_name = $1
+#               AND ($2 IS NULL OR table_schema = $2)
+#             ORDER BY ordinal_position;
+#             """,
+#             (table_name, schemaName)
+#         )
+
+#         if not rows:
+#             return f"Table '{table_name}' not found."
+
+#         return "\n".join(
+#             f"{row['column_name']}: {row['data_type']}"
+#             for row in rows
+#         )
+
+#     except Exception as e:
+#         return f"Error: {e}"
+
+
+
+
+
+import json
+
+@mcp.tool(
+    name="get_available_schemas",
+    description="Get available schemas for a given database"
+)
+async def get_available_schemas(
+    ctx: Context[ServerSession, AppContext],
+    databaseName: str,
+) -> str:
+    try:
+        conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
+
+        rows = await ctx.request_context.lifespan_context.db.query(
+            conn_id,
+            """
+            SELECT schema_name
+            FROM information_schema.schemata
+            WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+            ORDER BY schema_name;
+            """
+        )
+
+        return json.dumps({
+            "databaseName": databaseName,
+            "schemas": [row["schema_name"] for row in rows]
+        }, ensure_ascii=False)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+
+
+
+@mcp.tool(
+    name="get_available_databases",
+    description="Get available database names"
+)
+async def get_available_databases(
+    ctx: Context[ServerSession, AppContext],
+) -> str:
+    try:
+        db_names = list(ctx.request_context.lifespan_context.conn_ids.keys())
+
+        return json.dumps({
+            "databases": db_names
+        }, ensure_ascii=False)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @mcp.tool(
     name="get_available_tables",
-    description="Get available tables from the public schema"
+    description="Get available tables for a given schema in a given database"
 )
 async def get_available_tables(
     ctx: Context[ServerSession, AppContext],
     databaseName: str,
+    schemaName: str,
 ) -> str:
     try:
         conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
@@ -123,61 +263,23 @@ async def get_available_tables(
         rows = await ctx.request_context.lifespan_context.db.query(
             conn_id,
             """
-            SELECT table_schema, table_name
+            SELECT table_name
             FROM information_schema.tables
-            WHERE table_schema = 'public'
-            ORDER BY table_schema, table_name
-            """
-        )
-
-        tables = [f"{row['table_schema']}.{row['table_name']}" for row in rows]
-
-        return ", ".join(tables)
-
-    except Exception as e:
-        return f"Error: {e}"
-
-
-
-
-@mcp.tool(
-    name="get_table_schema",
-    description="Get column names and types for a given table in the public schema"
-)
-async def get_table_schema(
-    ctx: Context[ServerSession, AppContext],
-    table_name: str,
-    databaseName: str,
-) -> str:
-    try:
-        conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
-
-        rows = await ctx.request_context.lifespan_context.db.query(
-            conn_id,
-            """
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = $1
-            ORDER BY ordinal_position
+            WHERE table_type = 'BASE TABLE'
+              AND table_schema = $1
+            ORDER BY table_name;
             """,
-            (table_name,)
+            (schemaName,)
         )
 
-        if not rows:
-            return f"Table '{table_name}' not found."
-
-        return "\n".join(
-            f"{row['column_name']}: {row['data_type']}"
-            for row in rows
-        )
+        return json.dumps({
+            "databaseName": databaseName,
+            "schemaName": schemaName,
+            "tables": [row["table_name"] for row in rows]
+        }, ensure_ascii=False)
 
     except Exception as e:
-        return f"Error: {e}"
-
-
-
-
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 
@@ -202,6 +304,62 @@ async def validate_sql_explain(
         return "ok"
     except Exception as e:
         return f"Error: {e}"
+
+
+
+
+
+@mcp.tool(
+    name="get_table_schema",
+    description="Get column names and types for a given table in a given schema"
+)
+async def get_table_schema(
+    ctx: Context[ServerSession, AppContext],
+    databaseName: str,
+    schemaName: str,
+    table_name: str,
+) -> str:
+    try:
+        conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
+
+        rows = await ctx.request_context.lifespan_context.db.query(
+            conn_id,
+            """
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = $1
+              AND table_name = $2
+            ORDER BY ordinal_position;
+            """,
+            (schemaName, table_name)
+        )
+
+        if not rows:
+            return json.dumps({
+                "databaseName": databaseName,
+                "schemaName": schemaName,
+                "table_name": table_name,
+                "columns": [],
+                "error": f"Table '{schemaName}.{table_name}' not found."
+            }, ensure_ascii=False)
+
+        return json.dumps({
+            "databaseName": databaseName,
+            "schemaName": schemaName,
+            "table_name": table_name,
+            "columns": [
+                {
+                    "column_name": row["column_name"],
+                    "data_type": row["data_type"]
+                }
+                for row in rows
+            ]
+        }, ensure_ascii=False)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
 
 
 if __name__ == "__main__":

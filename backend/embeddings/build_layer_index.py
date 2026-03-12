@@ -1,49 +1,84 @@
 import json
-import os
-import sys
 from pathlib import Path
+from typing import Any
+import sys, os, time, asyncio
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 
 
 
-parent_dir = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(parent_dir))
-from database import Database
-from embeddings import embed_text
+
+
+from backend.Client.catalogBuilder import build_metadata_catalog
+from backend.embeddings.embeddings import embed_text
+from backend.embeddings.retrieve_layers import retrieve_relevant_tables_with_embeddings, format_table_context
 
 
 
-def main():
-    db = Database(os.environ["PGCONN_STRING"])
-    db.connect()
-    
-    rows = db.query("""
-        SELECT table_schema, table_name
-        FROM information_schema.tables
-        WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-          AND table_type = 'BASE TABLE';
-    """)
-    
+from backend.tools.longChainTools import (
+    tool_get_available_databases,
+    tool_get_available_schemas,
+    tool_get_available_tables,
+    tool_get_table_schema,
+)
+
+
+def build_table_description(item: dict[str, Any]) -> str:
+    cols = ", ".join(col["name"] for col in item.get("columns", []))
+    return (
+        f"Database: {item['database']}. "
+        f"Schema: {item['schema']}. "
+        f"Table: {item['table']}. "
+        f"Columns: {cols}."
+    )
+
+
+async def main():
+    catalog = await build_metadata_catalog(
+        get_available_databases=tool_get_available_databases,
+        get_available_schemas=tool_get_available_schemas,
+        get_available_tables=tool_get_available_tables,
+        get_table_schema=tool_get_table_schema,
+    )
+
     index = []
-    for _, r in rows.iterrows():
-        layer = f"{r['table_schema']}.{r['table_name']}"
-        desc = f"GIS layer named {r['table_name'].replace('_', ' ')}"
-        vec = embed_text(f"{layer}. {desc}")
+    for item in catalog:
+        desc = build_table_description(item)
+        vec = embed_text(desc)
+
         index.append({
-            "layer": layer,
+            "database": item["database"],
+            "schema": item["schema"],
+            "table": item["table"],
+            "full_name": item["full_name"],
+            "columns": item["columns"],
             "description": desc,
-            "embedding": vec
+            "embedding": vec,
         })
-    
-    db.disconnect()
-    
-    # Save to embeddings directory
-    output_path = Path(__file__).parent / "layer_index.json"
-    with open(output_path, "w") as f:
-        json.dump(index, f)
-    
+
+    output_path = Path(__file__).parent / "table_index.json"
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(index, f, ensure_ascii=False)
+
     print(f"Index size: {len(index)}")
     print(f"Saved to: {output_path}")
 
+    tables = retrieve_relevant_tables_with_embeddings(
+    "How many buildings are within 100 meters of flood zones?",
+        k=5,
+    )
+    
+    for t in tables:
+        print(t["full_name"], t["score"])
+    catalog_text = format_table_context(tables)
+
+    print(catalog_text)
+    v = format_table_context(catalog_text)
+    print(v)
+
+
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

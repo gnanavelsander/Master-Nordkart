@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class PoolManager:
     def __init__(self):
 
-        #create a dic to store db connetions 
+        #create a dic to store pool objects 
         self._pools: dict[str, asyncpg.Pool] = {}
 
     async def connect(self, connection_string: str) -> str:
@@ -28,7 +28,7 @@ class PoolManager:
             return conn_id
 
         except Exception as e:
-            logger.info(f"Failed to create pool: {e}")
+            logger.info(f"Failed to create pool={conn_id}: {e}")
             raise
 
     async def disconnect(self, conn_id: str) -> None:

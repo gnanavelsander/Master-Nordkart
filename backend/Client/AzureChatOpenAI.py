@@ -1,36 +1,37 @@
-import sys, os, time, asyncio
+import sys, time, asyncio, inspect
 from pathlib import Path
-from langchain_openai import AzureChatOpenAI
+from dataclasses import dataclass, asdict
+from typing import Optional
+
+from langchain_openai import AzureChatOpenAI,ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+from langchain_ollama import ChatOllama
+from config import (
+    AZURE_OPENAI_KEY,
+    AZURE_OPENAI_ENDPOINT,
+    AZURE_FOUNDRY_ENDPOINT,
+    AZURE_MODEL_DEPLOYMENT,
+    AZURE_OPENAI_MODEL_IDS,
+    AZURE_FOUNDRY_MODEL_IDS,
+    OLLAMA_MODEL_IDS
+)
 
-from config import AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_MODEL_DEPLOYMENT
-
-from backend.tools.longChainTools import (execute_postgis_query,
-                                           tool_validate_sql,
-                                           tool_get_available_tables, 
-                                           tool_get_table_schema, 
-                                           kommune_where_clause)
-
-
-
-
-PROMPT = (Path(__file__).parent / "prompt.txt").read_text(encoding="utf-8")
-#DATABASE_URL = os.getenv("PGCONN_STRING")
 from backend.firebase_admin_init import fs
 from firebase_admin import firestore
-
-from dataclasses import dataclass
-from typing import Optional
-from dataclasses import asdict
-
-
 from backend.mcp_c_s.mcp_client import MCPClientManager
+from backend.tools.longChainTools import (
+    execute_postgis_query,
+    tool_validate_sql,
+    tool_get_available_tables,
+    tool_get_table_schema,
+    kommune_where_clause,
+    tool_get_available_databases,
+)
 
-
-
+PROMPT = (Path(__file__).parent / "prompt.txt").read_text(encoding="utf-8")
 
 
 #declre obejct to store paramkn
@@ -40,9 +41,7 @@ class ModelParams:
     max_tokens: int = 2000
     timeout: int = 60
     max_retries: int = 2
-
-
-    tool_choice:str = "auto"
+    tool_choice: str = "auto"
 
 
 @dataclass
@@ -55,7 +54,6 @@ class AgentResult:
     all_errors: list[str]
 
 
-
 @dataclass
 class PipelineResult:
     model_id: str
@@ -64,213 +62,327 @@ class PipelineResult:
     attempts: int
     latency_s: float
     all_errors: list[str]
-    params: ModelParams  
-    agent: Optional[AgentResult] = None  
+    params: ModelParams
+    agent: Optional[AgentResult] = None
 
 
+# shared config
+MAX_AGENT_ITERATIONS = 10
 
 
-# initialize model
-def get_model(model_id: str, tools, params: Optional[ModelParams] = None):
-    params = params or ModelParams()
+#cach the parameters, to reuse the same pamras and inilialize once, to avoid creating hhtp clint each time
+_model_cache = {}
 
-    dep = AZURE_MODEL_DEPLOYMENT.get(model_id)
-    if not dep:
-        raise ValueError(f"Unknown model_id: {model_id}")
 
-    kwargs = {
-        "azure_deployment": dep,
-        "azure_endpoint": AZURE_OPENAI_ENDPOINT,
+# -----------------------------
+# model factory
+
+def _get_kwargs(params: ModelParams) -> dict:
+    return {
         "api_key": AZURE_OPENAI_KEY,
-        "api_version": "2024-02-15-preview",
         "temperature": params.temperature,
-        "max_tokens": params.max_tokens,
         "timeout": params.timeout,
         "max_retries": params.max_retries,
     }
 
 
 
+
+def get_ollama_model(model_id: str, tools, params: Optional[ModelParams] = None):
+    params = params or ModelParams()
+    model = ChatOllama(
+        model=model_id,
+        temperature=params.temperature,
+    )
+    return model.bind_tools(tools, tool_choice=params.tool_choice)
+
+
+def get_openai_model(model_id: str, tools, params: Optional[ModelParams] = None):
+    params = params or ModelParams()
+    dep = AZURE_MODEL_DEPLOYMENT.get(model_id)
+    if not dep:
+        raise ValueError(f"Unknown model_id: {model_id}")
+
+    kwargs = {
+        **_get_kwargs(params),
+        "azure_deployment": dep,
+        "azure_endpoint": AZURE_OPENAI_ENDPOINT,
+        "api_version": "2024-12-01-preview",
+        "max_tokens": params.max_tokens,
+    }
+
     return AzureChatOpenAI(**kwargs).bind_tools(tools, tool_choice=params.tool_choice)
 
 
+from langchain_openai import ChatOpenAI
+
+def get_foundry_model(model_id: str, tools, params: Optional[ModelParams] = None):
+    params = params or ModelParams()
+    dep = AZURE_MODEL_DEPLOYMENT.get(model_id)
+    if not dep:
+        raise ValueError(f"Unknown model_id: {model_id}")
+
+    model = ChatOpenAI(
+        model=dep,
+        api_key=AZURE_OPENAI_KEY,
+        base_url=AZURE_FOUNDRY_ENDPOINT,
+        temperature=params.temperature,
+        timeout=params.timeout,
+        max_retries=params.max_retries,
+    )
+
+    return model.bind_tools(tools, tool_choice=params.tool_choice)
 
 
 
 
 
-#cach the parameters, to reuse the same pamras and inilialize once, to avoid creating hhtp clint each time
 
-_model_cache = {}
 
-def get_model_cached (model_id, tools, params):
+
+
+def get_model(model_id: str, tools, params: Optional[ModelParams] = None):
+    params = params or ModelParams()
+
+    if model_id in AZURE_OPENAI_MODEL_IDS:
+        return get_openai_model(model_id, tools, params)
+
+    if model_id in AZURE_FOUNDRY_MODEL_IDS:
+        return get_foundry_model(model_id, tools, params)
     
+    elif model_id in OLLAMA_MODEL_IDS:
+        return get_ollama_model(model_id, tools, params)
 
-    params =  params or ModelParams()
+    raise ValueError(f"Unknown model_id: {model_id}")
 
-    key =(model_id,tuple(sorted(params.__dict__.items())), tuple(t.name for t in tools))
-    
-    if key not in _model_cache: 
+def get_model_cached(model_id, tools, params):
+    params = params or ModelParams()
+    key = (model_id, tuple(sorted(params.__dict__.items())), tuple(t.name for t in tools))
+
+    if key not in _model_cache:
         model = get_model(model_id, tools=tools, params=params)
-        _model_cache[key] = model 
-
-        return model 
+        _model_cache[key] = model
+        return model
     else:
         return _model_cache[key]
 
 
+# -----------------------------
+# shared helper functions
+# -----------------------------
+def get_agent_tools():
+    #deifine tools
+    return [
+        kommune_where_clause,
+        execute_postgis_query,
+        tool_get_available_tables,
+        tool_validate_sql,
+        tool_get_table_schema,
+        tool_get_available_databases,
+    ]
 
 
+def build_initial_messages(userInput: str):
+    return [SystemMessage(content=PROMPT), HumanMessage(content=userInput)]
 
 
-
-
-
-
-
-
-
-async def agentGis(userInput: str, model_id: str = "gpt-4o-mini", params: Optional[ModelParams] = None):
-
-
-
-    #deifine tools 
-    tools = [kommune_where_clause, execute_postgis_query, tool_get_available_tables, tool_validate_sql, tool_get_table_schema]
-
-    #call the modell, and  send model id and tools 
-    model = get_model_cached(model_id, tools, params=params)
-    
-
-    msgs = [SystemMessage(content=PROMPT), HumanMessage(content=userInput)]
-
-
+def build_tool_map(tools):
     #creatnig dictionart that map tool name
-    tool_map = {t.name: t for t in tools}
+    return {t.name: t for t in tools}
 
-    #store tool-call logs 
+
+def is_validation_ok(result: str) -> bool:
+    return str(result).strip().lower() == "ok"
+
+
+def collect_all_errors(tool_calls_log: list) -> list[str]:
+    #collect errors from toll result cross iterations
+    return [
+        t["result"]
+        for entry in tool_calls_log
+        for t in entry["tools"]
+        if isinstance(t.get("result"), str) and t["result"].startswith("Error")
+    ]
+
+
+def build_repair_prompt(question: str, sql: str, errors: list[str]) -> str:
+    return f"""
+You are fixing a broken PostGIS SQL query.
+Original question: {question}
+SQL that failed: {sql}
+Errors: {errors}
+Rewrite the SQL to fix the errors. Return only the corrected SQL.
+""".strip()
+
+
+def build_agent_result(
+    sql: str,
+    iterations: int,
+    tool_calls_log: list,
+    valid: bool,
+    agent_validated: bool,
+    all_errors: list[str],
+) -> AgentResult:
+    return AgentResult(
+        sql=sql,
+        iterations=iterations,
+        tool_calls=tool_calls_log,
+        valid=valid,
+        agent_validated=agent_validated,
+        all_errors=all_errors,
+    )
+
+
+async def execute_tool_calls(ai, tool_map, msgs, iteration_tools, last_validated_sql, last_validation_ok):
+    for tc in ai.tool_calls:
+        tool = tool_map[tc["name"]]
+        try:
+            result = await tool.ainvoke(tc["args"])  # unnecessary to run all tools again; may only need validation
+
+            #track which sql was validated and wether validation was ok
+            if tc["name"] == "tool_validate_sql":
+                last_validated_sql = (tc["args"].get("sql") or "").strip()
+                last_validation_ok = is_validation_ok(result)
+
+            iteration_tools.append({
+                "tool": tc["name"],
+                "args": tc["args"],
+                "result": str(result),
+            })
+
+            #reconsider this
+            msgs.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+
+        except Exception as e:
+            iteration_tools.append({
+                "tool": tc["name"],
+                "args": tc["args"],
+                "result": f"Error: {e}",
+            })
+            msgs.append(ToolMessage(content=f"Error: {e}", tool_call_id=tc["id"]))
+
+    return last_validated_sql, last_validation_ok
+
+
+def finalize_agent_without_tool_calls(ai, iterations, tool_calls_log, last_validated_sql, last_validation_ok):
+    #if there is not tool call in this iteration, the model is returning the final answer
+    current_sql = (ai.content or "").strip()
+
+    #evaualting whether the curremt sql is valid
+    validated = (
+        last_validation_ok
+        and last_validated_sql is not None
+        and current_sql == last_validated_sql
+    )
+
+    agent_called_validate = (last_validated_sql is not None)
+
+    return build_agent_result(
+        sql=current_sql,
+        iterations=iterations,
+        tool_calls_log=tool_calls_log,
+        valid=validated,
+        agent_validated=agent_called_validate,
+        all_errors=[] if validated else ["Final SQL was not validated"],
+    )
+
+def _short(s: str, n: int = 120) -> str:
+    s = (s or "").replace("\n", " ").strip()
+    return s if len(s) <= n else s[: n - 3] + "..."
+# -----------------------------
+# langchain agent
+# later you can make agentGis_langgraph(...)
+# and reuse the same helpers above
+# -----------------------------
+async def agentGis(userInput: str, model_id: str = "gpt-4o-mini", params: Optional[ModelParams] = None):
+    tools = get_agent_tools()
+
+    #call the modell, and  send model id and tools
+    model = get_model_cached(model_id, tools, params=params)
+
+    msgs = build_initial_messages(userInput)
+    tool_map = build_tool_map(tools)
+
+    #store tool-call logs
     tool_calls_log = []
-
     all_errors = []
 
     iterations = 0
     last_sql = None
-
     last_validated_sql = None
     last_validation_ok = False
 
-    for _ in range(10):
-
-        iterations += 1 
+    for _ in range(MAX_AGENT_ITERATIONS):
+        iterations += 1
 
         #send message to llm and wait to get the respons
         ai = await model.ainvoke(msgs)
         msgs.append(ai)
 
         # extract sql from llm
-        #check the content exist and not white speace 
+        #check the content exist and not white speace
         if ai.content and ai.content.strip():
             last_sql = ai.content.strip()
 
-
-
-        #if there is not tool call in this iteration, the model is returning the final answer
         if not ai.tool_calls:
-            current_sql = (ai.content or "").strip()
-
-            #evaualting whether the curremt sql is valid 
-
-            validated = (
-                last_validation_ok
-                and last_validated_sql is not None
-                and current_sql == last_validated_sql
+            return finalize_agent_without_tool_calls(
+                ai=ai,
+                iterations=iterations,
+                tool_calls_log=tool_calls_log,
+                last_validated_sql=last_validated_sql,
+                last_validation_ok=last_validation_ok,
             )
 
-            agent_called_validate = (last_validated_sql is not None)
-
-            return AgentResult(
-                    sql=current_sql,
-                    iterations=iterations,
-                    tool_calls=tool_calls_log,
-                    valid=validated,
-                    agent_validated=agent_called_validate,
-                    all_errors=[] if validated else ["Final SQL was not validated"],
-                )
         iteration_tools = []
 
-        for tc in ai.tool_calls:
-            tool = tool_map[tc["name"]]
-            try:
-                result = await tool.ainvoke(tc["args"])  # unnecessary to run all tools again; may only need validation
+        last_validated_sql, last_validation_ok = await execute_tool_calls(
+            ai=ai,
+            tool_map=tool_map,
+            msgs=msgs,
+            iteration_tools=iteration_tools,
+            last_validated_sql=last_validated_sql,
+            last_validation_ok=last_validation_ok,
+        )
 
-             #track which sql was validated and wether validation was ok 
-
-                if(tc["name"]=="tool_validate_sql"):
-                    last_validated_sql = (tc["args"].get("sql") or "").strip()
-                    last_validation_ok = str(result).strip().lower() == "ok"
-             
-                iteration_tools.append({
-                    "tool":   tc["name"],
-                    "args":   tc["args"],
-                    "result": str(result),
-                })
-
-                #reconsider this 
-                msgs.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
-            except Exception as e:
-                iteration_tools.append({
-                    "tool":   tc["name"],
-                    "args":   tc["args"],
-                    "result": f"Error: {e}",
-                })
-                msgs.append(ToolMessage(content=f"Error: {e}", tool_call_id=tc["id"]))
-
-
-
-        # store the tool call logs for this iteration 
+        # store the tool call logs for this iteration
         tool_calls_log.append({
             "iteration": iterations,
-            "tools":     iteration_tools,
+            "tools": iteration_tools,
         })
 
+        all_errors = collect_all_errors(tool_calls_log)
 
-        #collect errors from toll result cross iterations 
-        all_errors = [
-                t["result"]
-                for entry in tool_calls_log
-                for t in entry["tools"]
-                if isinstance(t.get("result"), str) and t["result"].startswith("Error")
-            ]
-
-
-    return AgentResult(
+    return build_agent_result(
         sql=last_sql or "Max iterations reached.",
         iterations=iterations,
-        tool_calls=tool_calls_log,
+        tool_calls_log=tool_calls_log,
         valid=False,
         agent_validated=False,
         all_errors=all_errors or ["Max iterations reached"],
     )
+def _dedup_keep_order(xs: list[str]) -> list[str]:
+    seen, out = set(), []
+    for x in xs or []:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
-
-
-
-
-
-
-async def sqlPipeline(question: str, model_id: str, max_attempts: int = 3,  params: Optional[ModelParams] = None ):
+async def sqlPipeline(
+    question: str,
+    model_id: str,
+    max_attempts: int = 3,
+    params: Optional[ModelParams] = None,
+):
     attempts = 0
     all_errors = []
     result = None
     current_prompt = question
     t0 = time.time()
 
-
-
-
-
     while attempts < max_attempts:
         attempts += 1
-        result = await agentGis(current_prompt, model_id=model_id, params= params)
+        result = await agentGis(current_prompt, model_id=model_id, params=params)
         sql = result.sql
 
         #return the results if sql is valid
@@ -281,58 +393,42 @@ async def sqlPipeline(question: str, model_id: str, max_attempts: int = 3,  para
                 valid=True,
                 attempts=attempts,
                 latency_s=round(time.time() - t0, 3),
-                all_errors=all_errors, #which iteration gave which error
+                all_errors=all_errors,  #which iteration gave which error
                 params=params or ModelParams(),
-                agent= result
+                agent=result,
             )
-        
+
         #if the result is not validate it restert the agent with a repair prompt that include the sql and errors
         all_errors.extend(result.all_errors)
 
-      #  all_errors.extend(result["all_errors"])
-        current_prompt = f"""
-You are fixing a broken PostGIS SQL query.
-Original question: {question}
-SQL that failed: {sql}
-Errors: {result.all_errors}
-Rewrite the SQL to fix the errors. Return only the corrected SQL.
-"""
+        current_prompt = build_repair_prompt(
+            question=question,
+            sql=sql,
+            errors=result.all_errors,
+        )
+
     return PipelineResult(
         model_id=model_id,
-        final_sql=False,
+        final_sql=None,
         valid=False,
         attempts=attempts,
         latency_s=round(time.time() - t0, 3),
         all_errors=all_errors,
         params=params or ModelParams(),
-        agent= result
-        
+        agent=result,
     )
-
-
-
-
-#optimize runn_all (later)
-async def run_all(user_input: str, model_ids: list[str],  params: Optional[ModelParams] = None):
-    tasks = [sqlPipeline(user_input, model_id, params=params ) for model_id in model_ids]
-    return await asyncio.gather(*tasks, return_exceptions=True)
-
-
-
-def _short(s: str, n: int = 120) -> str:
-    s = (s or "").replace("\n", " ").strip()
-    return s if len(s) <= n else s[: n - 3] + "..."
-
-
-
-
-def _dedup_keep_order(xs: list[str]) -> list[str]:
-    seen, out = set(), []
-    for x in xs or []:
-        if x not in seen:
-            seen.add(x)
-            out.append(x)
-    return out
+async def run_all(user_input: str, model_ids: list[str], params: Optional[ModelParams] = None):
+    results = []
+    for model_id in model_ids:
+        print(f"▶ Running {model_id}...")
+        try:
+            result = await sqlPipeline(user_input, model_id, params=params)
+            results.append(result)
+        except Exception as e:
+            print(f"✗ {model_id}: {e}")
+            results.append(e)
+        await asyncio.sleep(10)
+    return results
 
 def _print_summary_table(query: str, results: list):
     print("\n" + "#" * 100)
@@ -340,22 +436,16 @@ def _print_summary_table(query: str, results: list):
     print(query)
     print("#" * 100 + "\n")
 
-    print(f"{'MODEL':<15} {'VALID':<6} {'ATT':<4} {'LAT(s)':<8} {'ERROR'}")
-    print("-" * 100)
+    print(f"{'MODEL':<20} {'VALID':<6} {'ATT':<4} {'LAT(s)':<8} {'ERROR'}")
+    print("-" * 120)
 
     for r in results:
         if isinstance(r, Exception):
-            print(f"{'ERROR':<15} {'False':<6} {'-':<4} {'-':<8} {_short(str(r), 200)}")
+            print(f"{'ERROR':<20} {'False':<6} {'-':<4} {'-':<8} {_short(str(r), 200)}")
             continue
 
         err = "; ".join(_dedup_keep_order(r.all_errors))
-        print(f"{r.model_id:<15} {str(r.valid):<6} {str(r.attempts):<4} {r.latency_s:<8.3f} {err}")
-
-
-
-
-
-
+        print(f"{r.model_id:<20} {str(r.valid):<6} {str(r.attempts):<4} {r.latency_s:<8.3f} {err}")
 
 
 def _print_tool_logs(pr: "PipelineResult"):
@@ -384,14 +474,13 @@ def _print_tool_logs(pr: "PipelineResult"):
         for t in tools:
             tool = t.get("tool")
             args = t.get("args", {})
-            res  = t.get("result", "")
+            res = t.get("result", "")
             if tool == "tool_validate_sql":
-                ok = (str(res).strip().lower() == "ok")
+                ok = is_validation_ok(str(res))
                 print(f"  Iteration {it}: tool_validate_sql - {'ok' if ok else '✗ ' + _short(str(res), 200)}")
             else:
                 print(f"  Iteration {it}: {tool}({args}) → {_short(str(res), 220)}")
     print()
-
 
 
 def _print_details(results: list):
@@ -426,9 +515,7 @@ def _print_details(results: list):
 
 
 async def store_run_firestore(query: str, params: ModelParams, results: list):
-
-
-    #make  collection 
+    #make  collection
     run_ref = fs.collection("evaluation_runsLongChain").document()
     run_ref.set({
         "query": query,
@@ -453,8 +540,8 @@ async def store_run_firestore(query: str, params: ModelParams, results: list):
             continue
 
         doc = asdict(r)
-        # Make sure errors are deduped  
 
+        # Make sure errors are deduped
         doc["all_errors"] = _dedup_keep_order(doc.get("all_errors") or [])
         if doc.get("agent") and doc["agent"].get("all_errors"):
             doc["agent"]["all_errors"] = _dedup_keep_order(doc["agent"]["all_errors"])
@@ -465,34 +552,50 @@ async def store_run_firestore(query: str, params: ModelParams, results: list):
     batch.commit()
     return run_ref.id
 
+async def close_mcp():
+    try:
+        instance = MCPClientManager()
+        maybe = instance.close()
+        if inspect.isawaitable(maybe):
+            await maybe
+    except Exception as e:
+        print(f"close_mcp error: {e}")
+
+async def test_foundry_plain(model_id: str, prompt: str = "Say hello in one sentence."):
+    if model_id not in AZURE_FOUNDRY_MODEL_IDS:
+        raise ValueError(f"{model_id} is not a Foundry model")
+
+    model = get_foundry_model(model_id=model_id, tools=[], params=ModelParams())
+    resp = await model.ainvoke([HumanMessage(content=prompt)])
+
+    print(f"\nMODEL: {model_id}")
+    print(resp.content)
+
+
+
+
 async def main():
     try:
         params = ModelParams(temperature=0, timeout=60, max_tokens=2000)
 
-        queries = "Identify 100 flood zone polygons in Kristiansand that intersect forest productivity areas and are within 300 meters of footpaths."
+        queries = "find 10 buildings in grimstad"
 
         
-
-
-
-
-
-        model_ids = ["gpt-35-turbo", "gpt-4.1-nano", "gpt-4", "gpt-4o", "gpt-4o-mini"]
-
+        model_ids = [ "functiongemma"]
+        
         results = await run_all(queries, model_ids, params=params)
+
+
 
         _print_summary_table(queries, results)
         _print_details(results)
 
-        run_id = await store_run_firestore(queries, params, results)
-        print(f"Saved to Firestore: evaluation_runs/{run_id}\n")
-
-
     finally:
-      
-        MCPClientManager.close
+        await close_mcp()
+
+
+
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-    MCPClientManager.close

@@ -91,6 +91,7 @@ async def mcp_call(tool_name: str, args: dict) -> str:
     return await mcp_client.call(tool_name, args)
 
 
+
 async def query_postgis(sql: str, databaseName: str = "007workshop") -> list[dict]:
     try:
         json_str = await mcp_call(
@@ -101,49 +102,110 @@ async def query_postgis(sql: str, databaseName: str = "007workshop") -> list[dic
             },
         )
 
-        if not json_str or json_str.startswith("Error"):
-            return []
+        if not json_str:
+            raise RuntimeError("Empty response from MCP")
+
+        if json_str.startswith("Error"):
+            raise RuntimeError(json_str)
 
         data = json.loads(json_str)
-        return data if isinstance(data, list) else []
 
-    except Exception:
+        if not isinstance(data, list):
+            raise RuntimeError("MCP did not return a list of rows")
+
+        return data
+
+    except Exception as e:
         logger.exception("query_postgis failed: %s", sql)
-        return []
+        raise RuntimeError(f"query_postgis failed: {e}") from e
+    
 
 
-async def get_available_tables(databaseName: str = "007workshop") -> str:
-    return await mcp_call(
-        "get_available_tables",
-        {
-            "databaseName": databaseName,
-        },
-    )
 
 
-async def get_table_schema(
-    table_name: str,
-    databaseName: str = "007workshop",
-    schemaName: str = "public",
-) -> str:
-    return await mcp_call(
-        "get_table_schema",
-        {
-            "table_name": table_name,
-            "databaseName": databaseName,
-            "schemaName": schemaName,
-        },
-    )
+
+
+
+
+
+import json
+
+async def get_available_schemas(databaseName: str) -> dict:
+    try:
+        raw = await mcp_call(
+            "get_available_schemas",
+            {"databaseName": databaseName},
+        )
+        if not raw:
+            raise RuntimeError("Empty response from get_available_schemas")
+        return json.loads(raw)
+    except Exception as e:
+        raise RuntimeError(f"get_available_schemas failed: {e}") from e
+
+
+async def get_available_tables(databaseName: str, schemaName: str) -> dict:
+    try:
+        raw = await mcp_call(
+            "get_available_tables",
+            {
+                "databaseName": databaseName,
+                "schemaName": schemaName,
+            },
+        )
+        if not raw:
+            raise RuntimeError("Empty response from get_available_tables")
+        return json.loads(raw)
+    except Exception as e:
+        raise RuntimeError(f"get_available_tables failed: {e}") from e
+
+
+async def get_table_schema(databaseName: str, schemaName: str, table_name: str) -> dict:
+    try:
+        raw = await mcp_call(
+            "get_table_schema",
+            {
+                "databaseName": databaseName,
+                "schemaName": schemaName,
+                "table_name": table_name,
+            },
+        )
+        if not raw:
+            raise RuntimeError("Empty response from get_table_schema")
+        return json.loads(raw)
+    except Exception as e:
+        raise RuntimeError(f"get_table_schema failed: {e}") from e
+
+
+
+
+async def get_available_databases() -> list[str]:
+    raw = await mcp_call("get_available_databases", {})
+    data = json.loads(raw)
+    if "error" in data:
+        raise RuntimeError(data["error"])
+    return data.get("databases", [])
+
+
+
 
 
 async def validate_sql_via_mcp(
     sql: str,
-    databaseName: str = "007workshop",
+    databaseName: str,
 ) -> str:
-    return await mcp_call(
-        "validate_sql_explain",
-        {
-            "sql": sql,
-            "databaseName": databaseName,
-        },
-    )
+    try:
+        result = await mcp_call(
+            "validate_sql_explain",
+            {
+                "sql": sql,
+                "databaseName": databaseName,
+            },
+        )
+
+        if not result:
+            raise RuntimeError("Empty response from validate_sql_explain")
+
+        return result
+
+    except Exception as e:
+        raise RuntimeError(f"validate_sql_via_mcp failed: {e}") from e

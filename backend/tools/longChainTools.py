@@ -8,15 +8,51 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backend.mcp_c_s.mcp_client import (
-    get_available_tables,
-    get_table_schema,
+    # get_available_tables,
+    # get_table_schema,
     validate_sql_via_mcp,
     query_postgis,
+    get_available_schemas,
+    get_available_tables,
+    get_table_schema,
+    get_available_databases
 )
 
 
+
+
+
 @tool
-async def execute_postgis_query(sql: str, databaseName: str = "007workshop") -> str:
+async def tool_get_available_databases() -> list[str]:
+    """Get all available database names."""
+    return await get_available_databases()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+@tool
+async def execute_postgis_query(sql: str, databaseName: str) -> str:
     """Execute a PostGIS SQL query via MCP and return JSON (string)."""
     rows = await query_postgis(sql, databaseName=databaseName)
 
@@ -24,30 +60,77 @@ async def execute_postgis_query(sql: str, databaseName: str = "007workshop") -> 
     return json.dumps(rows[:5], ensure_ascii=False, default=str)
 
 
-@tool
-async def tool_get_available_tables(databaseName: str = "007workshop") -> str:
-    """Get all available tables in the PostGIS database."""
-    return await get_available_tables(databaseName=databaseName)
+# @tool
+# async def tool_get_available_tables(databaseName: str ) -> str:
+#     """Get all available tables in the PostGIS database."""
+#     return await get_available_tables(databaseName=databaseName)
+
+# @tool
+# async def tool_get_table_schema(
+#     table_name: str,
+#     databaseName: str,
+#     schemaName: str | None = None,
+# ) -> str:
+#     """Get column names and data types for a specific table."""
+
+#     if "." in table_name and schemaName is None:
+#         schemaName, table_name = table_name.split(".", 1)
+
+#     return await get_table_schema(
+#         table_name=table_name,
+#         databaseName=databaseName,
+#         schemaName=schemaName,
+#     )
 
 
+
 @tool
-async def tool_get_table_schema(
-    table_name: str,
-    databaseName: str = "007workshop",
-    schemaName: str | None = None,
-) -> str:
-    """Get column names and data types for a specific table."""
-    return await get_table_schema(
-        table_name=table_name,
+async def tool_get_available_schemas(databaseName: str) -> str:
+    """Get available schemas for a given database."""
+    return await get_available_schemas(databaseName=databaseName)
+
+
+
+@tool
+async def tool_get_available_tables(databaseName: str, schemaName: str) -> str:
+    """Get available tables for a given schema in a given database."""
+    return await get_available_tables(
         databaseName=databaseName,
         schemaName=schemaName,
     )
 
 
+
+
+
+
+@tool
+async def tool_get_table_schema(
+    databaseName: str,
+    schemaName: str,
+    table_name: str,
+) -> str:
+    """Get column names and data types for a specific table."""
+    return await get_table_schema(
+        databaseName=databaseName,
+        schemaName=schemaName,
+        table_name=table_name,
+    )
+
+
+
+
+
+
+
+
+
+
+
 @tool
 async def tool_validate_sql(
     sql: str,
-    databaseName: str = "007workshop",
+    databaseName: str,
 ) -> str:
     """Validate SQL syntax using EXPLAIN. Returns ok or error message."""
     return await validate_sql_via_mcp(sql, databaseName=databaseName)
@@ -96,3 +179,26 @@ a.geom && ST_Transform(
   25833
 )
 """.strip()
+
+
+
+
+
+@tool
+def get_available_gis_operations():
+    """Return supported GIS operations for query building."""
+    return [
+        "intersects",
+        "within",
+        "contains",
+        "touches",
+        "overlaps",
+        "buffer",
+        "distance",
+        "area",
+        "centroid",
+        "union",
+        "intersection",
+        "count",
+        "group_by",
+    ]

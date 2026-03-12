@@ -34,7 +34,7 @@ async def main():
         line = input(prompt)
 
         if not buf and line.strip().lower() in {"exit", "quit"}:
-            print("Bye 👋")
+            print("Bye ")
             break
 
         # legg til linje i buffer
@@ -53,5 +53,23 @@ async def main():
                 print(f"ERROR: {e}\n")
 
 
+
+
+
+import asyncpg
+import asyncio
+import os
+
+async def test():
+    conn = await asyncpg.connect(os.getenv("PGCONN_MATRIKKEL"))
+    result = await conn.fetchval("SELECT COUNT(*) FROM matrikkelenbygning_fe504ac373564e10b85865ef2a507c63.bygning")
+    print(f"Bygninger: {result}")
+    await conn.close()
+
+asyncio.run(test())
+
+
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(test())
