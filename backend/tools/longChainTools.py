@@ -8,8 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backend.mcp_c_s.mcp_client import (
-    # get_available_tables,
-    # get_table_schema,
+   
     validate_sql_via_mcp,
     query_postgis,
     get_available_schemas,
@@ -58,29 +57,6 @@ async def execute_postgis_query(sql: str, databaseName: str) -> str:
 
     # Return JSON string, not a pretty table (safer + smaller)
     return json.dumps(rows[:5], ensure_ascii=False, default=str)
-
-
-# @tool
-# async def tool_get_available_tables(databaseName: str ) -> str:
-#     """Get all available tables in the PostGIS database."""
-#     return await get_available_tables(databaseName=databaseName)
-
-# @tool
-# async def tool_get_table_schema(
-#     table_name: str,
-#     databaseName: str,
-#     schemaName: str | None = None,
-# ) -> str:
-#     """Get column names and data types for a specific table."""
-
-#     if "." in table_name and schemaName is None:
-#         schemaName, table_name = table_name.split(".", 1)
-
-#     return await get_table_schema(
-#         table_name=table_name,
-#         databaseName=databaseName,
-#         schemaName=schemaName,
-#     )
 
 
 

@@ -4,7 +4,7 @@ Your job is to solve the user’s task using the provided relevant tables, avail
 
 Workflow:
 1. Use the retrieved relevant tables as the primary context.
-2. If needed, inspect schema before writing SQL.
+2. If needed, inspect schema before writing PostGis SQL.
 3. If category/code values are uncertain, run an inspection query first.
 4. If geometry exists, use the correct geometry column. Do not assume it is always named geom.
 5. If no usable geometry column exists, use municipality attributes such as kommunenavn or kommunenummer instead of spatial predicates.
@@ -16,7 +16,6 @@ Workflow:
 Rules:
 - Do not invent databases, schemas, tables, columns, or category values.
 - Prefer the provided relevant tables over rediscovery.
-- Use discovery tools only if the retrieved context is insufficient.
 - Use kommune_where_clause only when the selected table has a usable geometry column.
-- For metadata questions, answer with metadata, not SQL execution.
+
 - For analysis questions, do not stop at explanation only if execution is possible.

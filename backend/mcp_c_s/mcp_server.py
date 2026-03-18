@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT))
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 from backend.database import PoolManager
-from config import PGCONN_STRING, PGCONN_MATRIKKEL
+from config import PGCONN_STRING, PGCONN_MATRIKKEL, PGCONN_GEONORGE_GIS
 from backend.log_utils import setup_logging
 
 
@@ -66,7 +66,8 @@ async def app_lifespan(server: FastMCP):
 
     conn_ids = {
         "007workshop": await poolManager.connect(PGCONN_STRING),
-        "matrikkelenbygning": await poolManager.connect(PGCONN_MATRIKKEL)
+        "matrikkelenbygning": await poolManager.connect(PGCONN_MATRIKKEL),
+        "geonorge_gis": await poolManager.connect(PGCONN_GEONORGE_GIS)
     }
 
     try:
@@ -107,81 +108,6 @@ async def run_postgis_query(
 
 
 
-
-
-
-# @mcp.tool(
-#     name="get_available_tables",
-#     description="Get available tables from the public schema"
-# )
-# async def get_available_tables(
-#     ctx: Context[ServerSession, AppContext],
-#     databaseName: str,
-# ) -> str:
-#     try:
-#         conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
-
-#         rows = await ctx.request_context.lifespan_context.db.query(
-#             conn_id,
-#             """
-#          SELECT table_schema, table_name
-#                 FROM information_schema.tables
-#                 WHERE table_type = 'BASE TABLE'
-#                 AND table_schema NOT IN ('pg_catalog', 'information_schema')
-#                 ORDER BY table_schema, table_name;
-#             """
-#         )
-
-#         tables = [f"{row['table_schema']}.{row['table_name']}" for row in rows]
-
-#         return ", ".join(tables)
-
-#     except Exception as e:
-#         return f"Error: {e}"
-
-
-
-# @mcp.tool(
-#     name="get_table_schema",
-#     description="Get column names and types for a given table"
-# )
-# async def get_table_schema(
-#     ctx: Context[ServerSession, AppContext],
-#     table_name: str,
-#     databaseName: str,
-#     schemaName: str | None = None,
-# ) -> str:
-#     try:
-#         conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
-
-#         rows = await ctx.request_context.lifespan_context.db.query(
-#             conn_id,
-#             """
-#             SELECT column_name, data_type
-#             FROM information_schema.columns
-#             WHERE table_name = $1
-#               AND ($2 IS NULL OR table_schema = $2)
-#             ORDER BY ordinal_position;
-#             """,
-#             (table_name, schemaName)
-#         )
-
-#         if not rows:
-#             return f"Table '{table_name}' not found."
-
-#         return "\n".join(
-#             f"{row['column_name']}: {row['data_type']}"
-#             for row in rows
-#         )
-
-#     except Exception as e:
-#         return f"Error: {e}"
-
-
-
-
-
-import json
 
 @mcp.tool(
     name="get_available_schemas",
@@ -364,5 +290,4 @@ async def get_table_schema(
 
 if __name__ == "__main__":
     logger.info("Starting MCP server")
-    print(f"Running MCP server...", flush=False)
     mcp.run()
