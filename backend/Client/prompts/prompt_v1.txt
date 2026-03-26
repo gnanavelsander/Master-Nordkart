@@ -20,11 +20,9 @@ Output rules:
 - Keep the summary short.
 
 
-
-
 PostGIS SQL Rules:
 - Always use EPSG:25833 for spatial operations internally.
-- Always return geometry as: ST_AsText(ST_Transform(<geometry_column>, 4326)) AS wkt_geom
+- If a usable geometry column exists in the selected table, include it in the result as ST_AsText(ST_Transform(<geometry_column>, 4326)) AS wkt_geom.
 - Use ST_DWithin for distance queries in meters.
 - Use ST_Intersects for overlap queries.
 - Use ST_Within for containment queries.

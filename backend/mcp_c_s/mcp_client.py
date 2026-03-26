@@ -209,3 +209,15 @@ async def validate_sql_via_mcp(
 
     except Exception as e:
         raise RuntimeError(f"validate_sql_via_mcp failed: {e}") from e
+    
+
+
+
+
+queries = [
+"Find 10 buildings that have cultural heritage status.",
+"Count residential buildings that are exempt from application requirements.",
+"Count industrial buildings that are SEFRAK-registered.",
+"Count buildings, excluding those classified as ruins.",
+"Count buildings grouped by ordinary registration and mass registration.",
+]

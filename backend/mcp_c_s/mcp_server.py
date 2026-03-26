@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT))
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 from backend.database import PoolManager
-from config import PGCONN_STRING, PGCONN_MATRIKKEL, PGCONN_GEONORGE_GIS
+from config import PGCONN_STRING, PGCONN_MATRIKKEL, PGCONN_BRANNSTASJONER, PGCONN_FLOMSONER,PGCONN_FLOMAKTSOMRADER, PGCONN_KVIKKLEIRE, PGCONN_MATRIKKELENEIENDOMSKARTTEIG, PGCONN_SNOSKREDAKTSOMHETSKART, PGCONN_AKTSOMHETSKART_JORD_FLOMSKRED, PGCONN_KOMMUNER
 from backend.log_utils import setup_logging
 
 
@@ -65,9 +65,23 @@ async def app_lifespan(server: FastMCP):
     poolManager = PoolManager()
 
     conn_ids = {
-        "007workshop": await poolManager.connect(PGCONN_STRING),
+       # "007workshop": await poolManager.connect(PGCONN_STRING),
         "matrikkelenbygning": await poolManager.connect(PGCONN_MATRIKKEL),
-        "geonorge_gis": await poolManager.connect(PGCONN_GEONORGE_GIS)
+
+
+
+        "flomaktsomrader": await poolManager.connect(PGCONN_FLOMAKTSOMRADER),
+        "flomsoner": await poolManager.connect(PGCONN_FLOMSONER),
+        "brannstasjoner": await poolManager.connect(PGCONN_BRANNSTASJONER),
+
+        "kvikkleire": await poolManager.connect(PGCONN_KVIKKLEIRE),
+        "snoskredaktsomhetskart": await poolManager.connect(PGCONN_SNOSKREDAKTSOMHETSKART),
+        "matrikkeleneiendomskartteig": await poolManager.connect(PGCONN_MATRIKKELENEIENDOMSKARTTEIG),
+        "aktsomhetskart_jord_flomskred": await poolManager.connect(PGCONN_AKTSOMHETSKART_JORD_FLOMSKRED),
+        "kommuner": await poolManager.connect(PGCONN_KOMMUNER),
+
+
+
     }
 
     try:
