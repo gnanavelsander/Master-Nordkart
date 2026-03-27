@@ -14,9 +14,121 @@ from langchain_ollama import ChatOllama
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 from langgraph.graph import StateGraph, END
 
+logger = logging.getLogger(__name__)
+
+
+class CleanFormatter(logging.Formatter):
+    def format(self, record):
+        name = record.name
+        msg = record.getMessage()
+
+        if name == "__main__":
+            if "Starting MCP server" in msg:
+                return "      [SYSTEM] starting MCP server"
+            if "Server ready, yielding app context" in msg:
+                return "      [SYSTEM] server ready"
+            return msg
+
+        if name == "backend.database.database":
+            if "Pool created for conn_id=" in msg:
+                conn_id = msg.split("conn_id=")[-1]
+                return f"      [DB] pool created : {conn_id}"
+            return f"      [DB] {msg}"
+
+        if name == "backend.mcp_c_s.mcp_client":
+            return f"      [MCP CLIENT] {msg}"
+
+        if name == "mcp.server.lowlevel.server":
+            if "Processing request of type CallToolRequest" in msg:
+                return "      [MCP] executing tool request"
+            if "Processing request of type ListToolsRequest" in msg:
+                return "      [MCP] listing tools"
+            return f"      [MCP] {msg}"
+
+        if name == "httpx":
+            return "      [HTTPX] request sent ok" if "HTTP Request:" in msg else f"      [HTTPX] {msg}"
+
+        if name == "openai._base_client":
+            if "Request options:" in msg:
+                return "      [OPENAI] request options prepared"
+            if "Sending HTTP Request:" in msg:
+                return "      [OPENAI] sending request"
+            if "HTTP Response:" in msg:
+                return "      [OPENAI] response received"
+            if "request_id:" in msg:
+                return f"      [OPENAI] {msg}"
+            return f"      [OPENAI] {msg}"
+
+        if name == "httpcore.connection":
+            if "connect_tcp.started" in msg:
+                return "      [HTTPCORE] tcp connect started"
+            if "connect_tcp.complete" in msg:
+                return "      [HTTPCORE] tcp connect complete"
+            if "start_tls.started" in msg:
+                return "      [HTTPCORE] tls start"
+            if "start_tls.complete" in msg:
+                return "      [HTTPCORE] tls ready"
+            if "close.started" in msg:
+                return "      [HTTPCORE] close started"
+            if "close.complete" in msg:
+                return "      [HTTPCORE] close complete"
+            return f"      [HTTPCORE] {msg}"
+
+        if name == "httpcore.http11":
+            if "send_request_headers.started" in msg:
+                return "      [HTTP11] sending headers"
+            if "send_request_headers.complete" in msg:
+                return "      [HTTP11] headers sent"
+            if "send_request_body.started" in msg:
+                return "      [HTTP11] sending body"
+            if "send_request_body.complete" in msg:
+                return "      [HTTP11] body sent"
+            if "receive_response_headers.started" in msg:
+                return "      [HTTP11] waiting for headers"
+            if "receive_response_headers.complete" in msg:
+                return "      [HTTP11] headers received"
+            if "receive_response_body.started" in msg:
+                return "      [HTTP11] receiving body"
+            if "receive_response_body.complete" in msg:
+                return "      [HTTP11] body received"
+            if "response_closed.started" in msg:
+                return "      [HTTP11] closing response"
+            if "response_closed.complete" in msg:
+                return "      [HTTP11] response closed"
+            return f"      [HTTP11] {msg}"
+
+        return f"      [{name}] {msg}"
+
+
+def setup_logging():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(CleanFormatter())
+
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+
+    for name in [
+        "__main__",
+        "backend.database.database",
+        "backend.mcp_c_s.mcp_client",
+        "mcp.server.lowlevel.server",
+        "httpx",
+        "openai._base_client",
+        "httpcore.connection",
+        "httpcore.http11",
+    ]:
+        lg = logging.getLogger(name)
+        lg.handlers.clear()
+        lg.propagate = True
+        lg.setLevel(logging.DEBUG)
+
+
+
 logging.getLogger("azure").setLevel(logging.WARNING)
 
-logger = logging.getLogger(__name__)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -510,12 +622,29 @@ async def _model_node(state: AgentState) -> AgentState:
     model = get_model(state["model_id"], tools, state["params"])
 
     logger.debug(
-        "[MODEL CALL] model=%s attempt=%s iter=%s restart=%s repair=%s "
-        "total_model_calls=%s total_tools=%s msg_count=%s "
-        "run_tokens=%s grand_tokens=%s "
-        "last_validation_ok=%s last_execute_ok=%s last_sql=%s "
-        "last_val_error=%s last_exec_error=%s "
-        "discovered_dbs=%s discovered_tables=%s total_api_calls=%s",
+        "\n"
+        + "=" * 90 + "\n"
+        + "MODEL CALL\n"
+        + "=" * 90 + "\n"
+        + "  model              : %s\n"
+        + "  attempt            : %s\n"
+        + "  iter               : %s\n"
+        + "  restart            : %s\n"
+        + "  repair             : %s\n"
+        + "  total_model_calls  : %s\n"
+        + "  total_tools        : %s\n"
+        + "  msg_count          : %s\n"
+        + "  run_tokens         : %s\n"
+        + "  grand_tokens       : %s\n"
+        + "  last_validation_ok : %s\n"
+        + "  last_execute_ok    : %s\n"
+        + "  last_sql           : %s\n"
+        + "  last_val_error     : %s\n"
+        + "  last_exec_error    : %s\n"
+        + "  discovered_dbs     : %s\n"
+        + "  discovered_tables  : %s\n"
+        + "  total_api_calls    : %s\n"
+        + "=" * 90,
         state["model_id"],
         state.get("attempt_number", 0),
         state.get("iterations", 0),
@@ -535,7 +664,6 @@ async def _model_node(state: AgentState) -> AgentState:
         state.get("discovered_tables", []),
         state.get("total_api_calls", 0),
     )
-
     state["total_api_calls"] = state.get("total_api_calls", 0) + 1
     state["crash_snapshot"] = _build_snapshot(state)
 
@@ -548,11 +676,23 @@ async def _model_node(state: AgentState) -> AgentState:
 
     tool_names = [tc["name"] for tc in (ai.tool_calls or [])]
     logger.debug(
-        "[MODEL RESULT] model=%s attempt=%s iter=%s tool_names=%s",
+        "\n"
+        + "-" * 90 + "\n"
+        + "MODEL RESULT\n"
+        + "-" * 90 + "\n"
+        + "  model              : %s\n"
+        + "  attempt            : %s\n"
+        + "  iteration          : %s\n"
+        + "  tool_calls         : %s\n"
+        + "  tool_names         : %s\n"
+        + "  ai_content         : %s\n"
+        + "-" * 90,
         state["model_id"],
         state.get("attempt_number", 0),
         state.get("iterations", 0) + 1,
+        len(ai.tool_calls or []),
         tool_names if tool_names else "none",
+        _short((ai.content or "").strip(), 200) if not ai.tool_calls else "(tool call response)",
     )
 
     iter_tokens = _extract_tokens(ai)
@@ -591,7 +731,6 @@ async def _model_node(state: AgentState) -> AgentState:
     state["crash_snapshot"] = _build_snapshot(state)
     return state
 
-
 async def _tools_node(state: AgentState) -> AgentState:
     tools = _get_tools()
     tool_map = {t.name: t for t in tools}
@@ -601,17 +740,32 @@ async def _tools_node(state: AgentState) -> AgentState:
     iteration_tools = []
 
     logger.debug(
-        "  Iteration: %s  Tool calls declared: %s",
-        state["iterations"], len(ai.tool_calls),
+        "\n"
+        + "  TOOL EXECUTION\n"
+        + "  " + "." * 86 + "\n"
+        + "    iteration        : %s\n"
+        + "    declared_calls   : %s\n"
+        + "  " + "." * 86,
+        state["iterations"],
+        len(ai.tool_calls),
     )
 
-    for tc in ai.tool_calls:
+    for i, tc in enumerate(ai.tool_calls, start=1):
         name = tc["name"]
         args = tc["args"]
         tool = tool_map[name]
         state["total_tool_calls"] = state.get("total_tool_calls", 0) + 1
 
-        logger.debug("    TOOL: %s  ARGS: %s", name, args)
+        logger.debug(
+            "\n"
+            + "    Tool call %s/%s\n"
+            + "      name           : %s\n"
+            + "      args           : %s",
+            i,
+            len(ai.tool_calls),
+            name,
+            args,
+        )
 
         try:
             if name == "execute_postgis_query":
@@ -623,8 +777,9 @@ async def _tools_node(state: AgentState) -> AgentState:
 
                 if not validation_ok or sql != validated_sql:
                     logger.warning(
-                        "    SQL guard fired: validation_ok=%s sql_matches=%s — skipping execution",
-                        validation_ok, sql == validated_sql,
+                        "      guard          : blocked (validation_ok=%s, sql_matches=%s)",
+                        validation_ok,
+                        sql == validated_sql,
                     )
                     result = (
                         "Error: SQL must be validated successfully before execution, "
@@ -633,11 +788,12 @@ async def _tools_node(state: AgentState) -> AgentState:
                 else:
                     result = await tool.ainvoke(args)
 
-                logger.debug("    RESULT: %s", _short(str(result), 200))
+                logger.debug("      result         : %s", _short(str(result), 300))
                 parsed = _parse_tool_result(result)
                 state["last_executed_result"] = parsed
                 state["last_execute_ok"] = not str(result).startswith("Error")
                 state["last_execute_error"] = None if state["last_execute_ok"] else str(result)
+
                 if not state["last_execute_ok"]:
                     state["all_errors"] = _dedup(
                         list(state.get("all_errors", [])) + [str(result)]
@@ -645,7 +801,7 @@ async def _tools_node(state: AgentState) -> AgentState:
 
             else:
                 result = await tool.ainvoke(args)
-                logger.debug("    RESULT: %s", _short(str(result), 200))
+                logger.debug("      result         : %s", _short(str(result), 300))
                 parsed = _parse_tool_result(result)
 
                 if name == "tool_get_available_databases":
@@ -675,6 +831,7 @@ async def _tools_node(state: AgentState) -> AgentState:
                     state["last_validation_ok"] = ok
                     state["valid_sql"] = ok
                     state["last_validation_error"] = None if ok else str(result)
+
                     if not ok:
                         state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
                         state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
@@ -695,7 +852,7 @@ async def _tools_node(state: AgentState) -> AgentState:
 
         except Exception as e:
             err = f"Error: {e}"
-            logger.debug("    RESULT: %s", _short(err, 200))
+            logger.debug("      result         : %s", _short(err, 300))
             state["all_errors"] = _dedup(list(state.get("all_errors", [])) + [err])
             iteration_tools.append({"tool": name, "args": args, "result": err})
             msgs.append(ToolMessage(content=err, tool_call_id=tc["id"]))
@@ -719,6 +876,8 @@ async def _tools_node(state: AgentState) -> AgentState:
     state["current_run_log"] = run_log
     state["crash_snapshot"] = _build_snapshot(state)
     return state
+
+
 
 
 def _sql_repair_node(state: AgentState) -> AgentState:
@@ -1103,144 +1262,182 @@ def extract_agent_trace(result: PipelineResult) -> AgentTrace:
 # ─────────────────────────────────────────────────────────────
 
 def _print_summary(query: str, results: list):
+    logger.info("\n" + "#" * 130)
+    logger.info("QUERY")
+    logger.info("  %s", query)
     logger.info("#" * 130)
-    logger.info("QUERY: %s", query)
-    logger.info("#" * 130)
+
     logger.info(
-        "%-20s %-8s %-6s %-6s %-5s %-4s %-4s %-5s %-8s %-6s %-8s %s",
-        "MODEL", "SQL_OK", "EXEC", "TASK", "ITER", "REP", "RST", "API",
-        "LAT(s)", "TOOLS", "TOKENS", "ERROR",
+        "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-6s %-10s %-8s %-10s %s",
+        "MODEL",
+        "SQL_OK",
+        "EXEC",
+        "TASK",
+        "ITER",
+        "REP",
+        "RST",
+        "API",
+        "LATENCY",
+        "TOOLS",
+        "TOKENS",
+        "ERROR",
     )
-    logger.info("-" * 185)
+    logger.info("-" * 130)
 
     for r in results:
         if isinstance(r, Exception):
             logger.info(
-                "%-20s %-8s %-6s %-6s %-5s %-4s %-4s %-5s %-8s %-6s %-8s %s",
-                "ERROR", "False", "False", "False", "-", "-", "-", "-",
-                "-", "-", "-", _short(str(r), 200),
+                "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-6s %-10s %-8s %-10s %s",
+                "ERROR",
+                "False",
+                "False",
+                "False",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                _short(str(r), 200),
             )
             continue
 
         trace = extract_agent_trace(r)
-        err = "; ".join(_dedup(r.all_errors))
+        err = "; ".join(_dedup(r.all_errors)) or "-"
         total_tokens = r.tokens.total_tokens if r.tokens else "-"
+
         logger.info(
-            "%-20s %-8s %-6s %-6s %-5s %-4s %-4s %-5s %-8.3f %-6s %-8s %s",
-            r.model_id, str(r.valid_sql), str(r.executed), str(r.task_completed),
-            r.iterations, r.sql_repairs_used, r.restarts_used, r.total_api_calls,
-            r.latency_s, trace.total_tool_calls, str(total_tokens), err,
+            "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-6s %-10s %-8s %-10s %s",
+            r.model_id,
+            str(r.valid_sql),
+            str(r.executed),
+            str(r.task_completed),
+            r.iterations,
+            r.sql_repairs_used,
+            r.restarts_used,
+            r.total_api_calls,
+            f"{r.latency_s:.3f}s",
+            trace.total_tool_calls,
+            str(total_tokens),
+            err,
         )
-
-
 def _print_details(results: list):
-    logger.info("=" * 110)
+    logger.info("\n" + "=" * 110)
     logger.info("DETAILS PER MODEL")
     logger.info("=" * 110)
 
     for r in results:
-        logger.info("-" * 110)
+        logger.info("\n" + "-" * 110)
 
         if isinstance(r, Exception):
-            logger.info("[ERROR] %s", r)
+            logger.info("ERROR")
+            logger.info("  message            : %s", r)
             continue
 
         trace = extract_agent_trace(r)
+
         logger.info("[%s]", r.model_id)
-        logger.info("VALID SQL:   %s", r.valid_sql)
-        logger.info("EXECUTED:    %s", r.executed)
-        logger.info("ITERATIONS:  %s", r.iterations)
-        logger.info("SQL REPAIRS: %s", r.sql_repairs_used)
-        logger.info("RESTARTS:    %s", r.restarts_used)
-        logger.info("LATENCY:     %.3fs", r.latency_s)
-        logger.info("API CALLS:   %s", r.total_api_calls)
+        logger.info("  valid_sql          : %s", r.valid_sql)
+        logger.info("  executed           : %s", r.executed)
+        logger.info("  iterations         : %s", r.iterations)
+        logger.info("  sql_repairs        : %s", r.sql_repairs_used)
+        logger.info("  restarts           : %s", r.restarts_used)
+        logger.info("  latency_s          : %.3f", r.latency_s)
+        logger.info("  api_calls          : %s", r.total_api_calls)
 
         if r.tokens:
             logger.info(
-                "TOKENS:      in=%s out=%s total=%s",
-                r.tokens.prompt_tokens, r.tokens.completion_tokens, r.tokens.total_tokens,
+                "  tokens             : in=%s out=%s total=%s",
+                r.tokens.prompt_tokens,
+                r.tokens.completion_tokens,
+                r.tokens.total_tokens,
             )
 
         if r.all_errors:
-            logger.info("ERRORS:")
+            logger.info("\n  ERRORS:")
             for err in _dedup(r.all_errors):
-                logger.info("  - %s", err)
+                logger.info("    - %s", err)
 
-        logger.info("TRACE:")
-        logger.info("  databases explored : %s", trace.databases_explored)
-        logger.info("  databases in result: %s", trace.databases_in_result)
-        logger.info("  tables explored    : %s", trace.tables_explored)
-        logger.info("  tables in result   : %s", trace.tables_in_result)
-        logger.info("  validated          : %s", trace.validated_before_exec)
-        logger.info("  executed ok        : %s", trace.executed_successfully)
-        logger.info("  total tool calls   : %s", trace.total_tool_calls)
-        logger.info("  tool call counts   : %s", trace.tool_call_counts)
+        logger.info("\n  TRACE:")
+        logger.info("    databases explored : %s", trace.databases_explored)
+        logger.info("    databases in result: %s", trace.databases_in_result)
+        logger.info("    tables explored    : %s", trace.tables_explored)
+        logger.info("    tables in result   : %s", trace.tables_in_result)
+        logger.info("    validated          : %s", trace.validated_before_exec)
+        logger.info("    executed ok        : %s", trace.executed_successfully)
+        logger.info("    total tool calls   : %s", trace.total_tool_calls)
+        logger.info("    tool call counts   : %s", trace.tool_call_counts)
 
         if trace.executions:
-            logger.info("EXECUTIONS:")
-            for ex in trace.executions:
-                logger.info("  Iteration : %s", ex["iteration"])
-                logger.info("  Success   : %s", ex["success"])
-                logger.info("  Database  : %s", ex["database"])
-                logger.info("  SQL       : %s", ex["sql"])
+            logger.info("\n  EXECUTIONS:")
+            for i, ex in enumerate(trace.executions):
+                logger.info("    Execution %s:", i)
+                logger.info("      iteration       : %s", ex["iteration"])
+                logger.info("      success         : %s", ex["success"])
+                logger.info("      database        : %s", ex["database"])
+                logger.info("      sql             : %s", ex["sql"])
                 if not ex["success"]:
-                    logger.info("  Error     : %s", ex["error"])
+                    logger.info("      error           : %s", ex["error"])
 
         if r.run_logs:
-            logger.info("RUN LOGS:")
+            logger.info("\n  RUN LOGS:")
             for run in r.run_logs:
-                logger.info(
-                    "  attempt=%s  run_index=%s  repairs=%s",
-                    run.get("attempt_number", 0),
-                    run.get("run_index", 0),
-                    run.get("sql_repairs_used", 0),
-                )
-                logger.info("  Final SQL       : %s", run.get("final_sql") or "(none)")
+                logger.info("    Run %s:", run.get("run_index", 0))
+                logger.info("      attempt         : %s", run.get("attempt_number", 0))
+                logger.info("      sql_repairs     : %s", run.get("sql_repairs_used", 0))
+                logger.info("      final_sql       : %s", run.get("final_sql") or "(none)")
+
                 atk = run.get("attempt_tokens")
                 if atk:
                     logger.info(
-                        "  Run tokens      : in=%s out=%s total=%s",
+                        "      tokens          : in=%s out=%s total=%s",
                         atk.get("prompt_tokens", 0),
                         atk.get("completion_tokens", 0),
                         atk.get("total_tokens", 0),
                     )
+
                 if run.get("validation_error"):
-                    logger.info("  Validation error: %s", run["validation_error"])
+                    logger.info("      validation_error: %s", run["validation_error"])
                 if run.get("execution_error"):
-                    logger.info("  Execution error : %s", run["execution_error"])
+                    logger.info("      execution_error : %s", run["execution_error"])
 
                 for entry in run.get("iterations", []):
                     tok = entry.get("tokens", {})
-                    logger.info("  Iteration            : %s", entry["iteration"])
+                    logger.info("      Iteration %s:", entry["iteration"])
                     logger.info(
-                        "  Iteration tokens     : in=%s out=%s total=%s",
+                        "        tokens              : in=%s out=%s total=%s",
                         tok.get("prompt_tokens", 0),
                         tok.get("completion_tokens", 0),
                         tok.get("total_tokens", 0),
                     )
-                    logger.info("  AI content           : %s", entry.get("ai_content", ""))
+                    logger.info("        ai_content          : %s", entry.get("ai_content", ""))
                     logger.info(
-                        "  Tool calls declared  : %s", len(entry.get("tool_calls", []))
+                        "        tool_calls_declared : %s",
+                        len(entry.get("tool_calls", [])),
                     )
+
                     for t in entry.get("tools", []):
-                        logger.info("    TOOL   : %s", t["tool"])
-                        logger.info("    ARGS   : %s", t["args"])
+                        logger.info("          TOOL   : %s", t["tool"])
+                        logger.info("          ARGS   : %s", t["args"])
                         if t["tool"] == "tool_validate_sql":
                             ok = str(t["result"]).strip().lower() == "ok"
                             logger.info(
-                                "    RESULT : %s",
+                                "          RESULT : %s",
                                 "ok" if ok else "fail: " + str(t["result"]),
                             )
                         else:
-                            logger.info("    RESULT : %s", t["result"])
+                            logger.info("          RESULT : %s", t["result"])
 
-        logger.info("FINAL ANSWER: %s", r.final_answer or "(none)")
-        logger.info("FINAL SQL: %s", r.final_sql or "(none)")
+        logger.info("\n  FINAL:")
+        logger.info("    answer            : %s", r.final_answer or "(none)")
+        logger.info("    sql               : %s", r.final_sql or "(none)")
         logger.info(
-            "RESULT DATA: %s", r.result_data if r.result_data is not None else "(none)"
+            "    result_data       : %s",
+            r.result_data if r.result_data is not None else "(none)",
         )
 
-    logger.info("=" * 110)
+    logger.info("\n" + "=" * 110)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1509,7 +1706,10 @@ async def run_all(
     sem = asyncio.Semaphore(1)
 
     for i, model_id in enumerate(model_ids, start=1):
-        logger.info("Running model %s/%s: %s", i, len(model_ids), model_id)
+        logger.info("\n" + "=" * 120)
+        logger.info("RUNNING MODEL %s/%s: %s", i, len(model_ids), model_id)
+        logger.info("=" * 120)
+
         result = await _run_one_with_retry(
             user_input=user_input,
             model_id=model_id,
@@ -1518,6 +1718,11 @@ async def run_all(
             sem=sem,
         )
         results.append(result)
+
+        logger.info("\n" + "#" * 120)
+        logger.info("FINAL MODEL REPORT: %s", model_id)
+        logger.info("#" * 120)
+
         if isinstance(result, Exception):
             logger.error("[ERROR][%s] %s", model_id, result)
         else:
@@ -1531,7 +1736,9 @@ async def run_all(
 # ─────────────────────────────────────────────────────────────
 
 async def main():
-    logging.basicConfig(level=logging.INFO)
+    
+    
+    setup_logging()
     logger.setLevel(logging.DEBUG)
 
     queries = [
