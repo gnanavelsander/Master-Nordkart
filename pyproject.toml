@@ -34,4 +34,5 @@ dependencies = [
   "torch>=2.10.0",
   "numpy>=2.4.2",
   "azure-storage-blob>=12.28.0",
+  "geopandas>=1.1.3",
 ]

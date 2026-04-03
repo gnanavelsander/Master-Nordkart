@@ -18,58 +18,59 @@ if not loaded:
 if not os.getenv("PGCONN_STRING"):
     raise RuntimeError("PGCONN_STRING missing after loading .env")
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
-from backend.mcp_c_s.mcp_client import query_postgis
+from backend.mcp_c_s.mcp_client import query_postgis, run_multidb_plan
 
 
 async def main():
-    print("PostGIS SQL terminal")
-    print("Write multi-line SQL. Execute when you end with ';'")
-    print("Type 'exit' to quit.\n")
-
-    buf: list[str] = []
-
-    while True:
-        prompt = "sql> " if not buf else "...> "
-        line = input(prompt)
-
-        if not buf and line.strip().lower() in {"exit", "quit"}:
-            print("Bye ")
-            break
-
-        # legg til linje i buffer
-        buf.append(line)
-
-        # kjør først når siste linje ender med ;
-        if line.strip().endswith(";"):
-            sql = "\n".join(buf).strip()
-            buf.clear()
-
-            try:
-                df = await query_postgis(sql)
-                print(df)
-                print(f"\nRows: {len(df)} | Empty: {df.empty}\n")
-            except Exception as e:
-                print(f"ERROR: {e}\n")
 
 
 
 
+    plan = {
+    "query_mode": "multi_db",
+    "steps": [
+        {
+            "step": 1,
+            "action": "query",
+            "database": "matrikkelenbygning",
+            "sql": "SELECT kommunenavn, ST_AsBinary(ST_Transform(representasjonspunkt, 25833)) AS representasjonspunkt FROM matrikkelenbygning_fe504ac373564e10b85865ef2a507c63.bygning WHERE representasjonspunkt IS NOT NULL"
+        },
+        {
+            "step": 2,
+            "action": "query",
+            "database": "flomsoner",
+            "sql": "SELECT ST_AsBinary(ST_Transform(omrade, 25833)) AS omrade FROM flomsoner_76d14d5fe2fd4a29bfffc266fdcdd820.flomareal WHERE omrade IS NOT NULL"
+        },
+        {
+            "step": 3,
+            "action": "spatial_join",
+            "left_source": 1,
+            "right_source": 2,
+            "join_type": "intersects",
+            "left_geom": "representasjonspunkt",
+            "right_geom": "omrade"
+        },
+        {
+            "step": 4,
+            "action": "aggregate",
+            "source_step": 3,
+            "group_by": ["kommunenavn"],
+            "metric_as": "buildings_in_flom",
+            "order_by": "buildings_in_flom",
+            "order_direction": "desc",
+            "limit": 5
+        }
+    ]
+}
+    row = await run_multidb_plan(plan)
+    print(row)
 
-import asyncpg
-import asyncio
-import os
-
-async def test():
-    conn = await asyncpg.connect(os.getenv("PGCONN_MATRIKKEL"))
-    result = await conn.fetchval("SELECT COUNT(*) FROM matrikkelenbygning_fe504ac373564e10b85865ef2a507c63.bygning")
-    print(f"Bygninger: {result}")
-    await conn.close()
-
-asyncio.run(test())
 
 
 
 
 if __name__ == "__main__":
-    asyncio.run(test())
+    asyncio.run(main())

@@ -3,6 +3,7 @@ import sys
 import json
 import asyncio
 import logging
+from typing import Any
 
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
@@ -128,7 +129,29 @@ async def query_postgis(sql: str, databaseName: str = "007workshop") -> list[dic
 
 
 
-import json
+async def run_multidb_plan(plan: dict[str, Any]) -> dict:
+    try:
+        raw = await mcp_call("run_multidb_plan", {"plan": plan})
+
+        print("RAW TYPE:", type(raw))
+        print("RAW VALUE:", raw)
+
+        if not raw:
+            raise RuntimeError("Empty response from run_multidb_plan")
+
+        if isinstance(raw, dict):
+            return raw
+
+        if isinstance(raw, str) and raw.startswith("Error:"):
+            raise RuntimeError(raw)
+
+        if isinstance(raw, str):
+            return json.loads(raw)
+
+        raise RuntimeError(f"Unexpected response type: {type(raw)}")
+
+    except Exception as e:
+        raise RuntimeError(f"run_multidb_plan failed: {e}") from e
 
 async def get_available_schemas(databaseName: str) -> dict:
     try:
@@ -188,10 +211,11 @@ async def get_available_databases() -> list[str]:
 
 
 
-
 async def validate_sql_via_mcp(
     sql: str,
     databaseName: str,
+    step_number: int,
+    
 ) -> str:
     try:
         result = await mcp_call(
@@ -199,6 +223,7 @@ async def validate_sql_via_mcp(
             {
                 "sql": sql,
                 "databaseName": databaseName,
+                "step_number": step_number,
             },
         )
 
@@ -209,15 +234,211 @@ async def validate_sql_via_mcp(
 
     except Exception as e:
         raise RuntimeError(f"validate_sql_via_mcp failed: {e}") from e
-    
+
+
+
+async def execute_query_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call(
+        "execute_query_step",
+        {
+            "run_id": run_id,
+            "step": step,
+        },
+    )
+    if not raw:
+        raise RuntimeError("Empty response from execute_query_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+
+async def execute_filter_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call(
+        "execute_filter_step",
+        {
+            "run_id": run_id,
+            "step": step,
+        },
+    )
+    if not raw:
+        raise RuntimeError("Empty response from execute_filter_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
 
 
 
 
-queries = [
-"Find 10 buildings that have cultural heritage status.",
-"Count residential buildings that are exempt from application requirements.",
-"Count industrial buildings that are SEFRAK-registered.",
-"Count buildings, excluding those classified as ruins.",
-"Count buildings grouped by ordinary registration and mass registration.",
-]
+async def execute_select_columns_step(run_id: str, step:dict)->dict:
+    raw = await mcp_call(
+        "execute_select_columns_step",
+        {
+            "run_id": run_id,
+            "step": step,
+        },
+    )
+    if not raw:
+        raise RuntimeError("Empty response from execute_select_columns_step")
+
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+
+async def execute_spatial_join_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_spatial_join_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_spatial_join_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_attribute_join_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_attribute_join_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_attribute_join_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_buffer_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_buffer_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_buffer_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_nearest_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_nearest_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_nearest_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_distance_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_distance_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_distance_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_aggregate_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_aggregate_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_aggregate_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_sort_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_sort_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_sort_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_limit_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_limit_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_limit_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_clip_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_clip_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_clip_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_union_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_union_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_union_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_intersection_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_intersection_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_intersection_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_difference_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_difference_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_difference_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_dissolve_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_dissolve_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_dissolve_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_centroid_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_centroid_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_centroid_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def execute_transform_crs_step(run_id: str, step: dict) -> dict:
+    raw = await mcp_call("execute_transform_crs_step", {"run_id": run_id, "step": step})
+    if not raw:
+        raise RuntimeError("Empty response from execute_transform_crs_step")
+    if raw.startswith("Error"):
+        raise RuntimeError(raw)
+    return json.loads(raw)
+
+
+async def get_database_catalog(
+    databaseName: str | None = None,
+    schemaName: str | None = None,
+) -> dict:
+    try:
+        args = {}
+        if databaseName is not None:
+            args["databaseName"] = databaseName
+        if schemaName is not None:
+            args["schemaName"] = schemaName
+
+        raw = await mcp_call("get_database_catalog", args)
+
+        if not raw:
+            raise RuntimeError("Empty response from get_database_catalog")
+
+        return json.loads(raw)
+
+    except Exception as e:
+        raise RuntimeError(f"get_database_catalog failed: {e}") from e

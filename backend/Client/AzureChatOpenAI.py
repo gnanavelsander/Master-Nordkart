@@ -16,6 +16,22 @@ from langgraph.graph import StateGraph, END
 
 logger = logging.getLogger(__name__)
 
+from typing import Literal
+from pydantic import BaseModel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 class CleanFormatter(logging.Formatter):
     def format(self, record):
@@ -144,15 +160,33 @@ from config import (
 )
 
 from backend.tools.longChainTools import (
-    execute_postgis_query,
     tool_validate_sql,
     tool_get_available_tables,
     tool_get_table_schema,
     kommune_where_clause,
     tool_get_available_databases,
     tool_get_available_schemas,
-)
 
+    tool_execute_query_step,
+    tool_execute_filter_step,
+    tool_execute_select_columns_step,
+    tool_execute_spatial_join_step,
+    tool_execute_attribute_join_step,
+    tool_execute_buffer_step,
+    tool_execute_nearest_step,
+    tool_execute_distance_step,
+    tool_execute_aggregate_step,
+    tool_execute_sort_step,
+    tool_execute_limit_step,
+    tool_execute_clip_step,
+    tool_execute_union_step,
+    tool_execute_intersection_step,
+    tool_execute_difference_step,
+    tool_execute_dissolve_step,
+    tool_execute_centroid_step,
+    tool_execute_transform_crs_step,
+    tool_get_database_catalog,
+)
 from AzureBlobStorage import (
     upload,
     query_hash,
@@ -162,7 +196,6 @@ from AzureBlobStorage import (
 )
 
 from backend.mcp_c_s.mcp_client import mcp_client
-
 
 # ─────────────────────────────────────────────────────────────
 # Dataclasses
@@ -251,6 +284,54 @@ class EvalRun:
     def __post_init__(self):
         if self.params is None:
             self.params = ModelParams()
+
+
+
+
+
+
+
+# class QueryMode(BaseModel):
+#     query_mode: Literal["single_db", "multi_db"]
+
+
+
+
+
+# def get_classifier_model(model_id: str, params: ModelParams):
+#     base = AzureChatOpenAI(
+#         api_key=AZURE_OPENAI_KEY,
+#         azure_deployment=AZURE_MODEL_DEPLOYMENT[model_id],
+#         azure_endpoint=AZURE_OPENAI_ENDPOINT,
+#         api_version="2024-12-01-preview",
+#         temperature=0.0,
+#         max_tokens=50,
+#         timeout=params.timeout,
+#         max_retries=params.max_retries,
+#     )
+#     return base.with_structured_output(QueryMode)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -364,22 +445,31 @@ Avoid redundant metadata calls if the needed metadata has already been discovere
 """.strip()
 
 
-def _run_log_entry_from_state(state: "AgentState") -> dict:
-    return {
 
+def _run_log_entry_from_state(state: "AgentState") -> dict:
+    steps = state.get("step_registry", {})
+
+    final_sql = [
+        s.get("sql")
+        for _, s in sorted(steps.items(), key=lambda x: int(x[0]))
+        if s.get("action") == "query" and s.get("sql")
+    ]
+
+    if not final_sql:
+        final_sql = state.get("last_validated_sql") or state.get("last_sql")
+    return {
         "attempt_number": state.get("attempt_number", 0),
-        # run_index: how many internal restarts happened within this attempt.
         "run_index": state.get("restart_count", 0),
         "sql_repairs_used": state.get("sql_repair_count", 0),
         "iterations": list(state.get("current_run_log", [])),
-        "final_sql": state.get("last_sql"),
+        "final_sql": final_sql,
         "validation_error": state.get("last_validation_error"),
         "execution_error": state.get("last_execute_error"),
         "discovered_tables": list(state.get("discovered_tables", [])),
         "discovered_databases": list(state.get("discovered_databases", [])),
         "attempt_tokens": dict(state.get("attempt_tokens", _empty_token_dict())),
+        "step_registry": dict(state.get("step_registry", {})),
     }
-
 
 def _log_entry_key(entry: dict) -> str:
     """Stable content-based key for deduplication."""
@@ -409,6 +499,15 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
         if not any(_log_entry_key(r) == _log_entry_key(current) for r in run_logs):
             run_logs.append(current)
 
+    steps = state.get("step_registry", {})
+    final_sql = [
+        s.get("sql")
+        for _, s in sorted(steps.items(), key=lambda x: int(x[0]))
+        if s.get("action") == "query" and s.get("sql")
+    ]
+    if not final_sql:
+        final_sql = state.get("last_validated_sql") or state.get("last_sql")
+
     return {
         "model_id": state.get("model_id"),
         "iterations": state.get("total_iterations", 0),
@@ -417,7 +516,7 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
         "total_tool_calls": state.get("total_tool_calls", 0),
         "tokens": dict(state.get("grand_total_tokens", _empty_token_dict())),
         "all_errors": _dedup(errors),
-        "final_sql": state.get("last_validated_sql") or state.get("last_sql"),
+        "final_sql": final_sql,
         "run_logs": _dedup_logs(run_logs),
         "discovered_databases": list(state.get("discovered_databases", [])),
         "discovered_tables": list(state.get("discovered_tables", [])),
@@ -425,6 +524,10 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
         "last_execute_error": state.get("last_execute_error"),
         "total_api_calls": state.get("total_api_calls", 0),
     }
+
+
+
+
 
 
 def _accumulate_retry_snapshots(base: dict | None, new: dict | None) -> dict:
@@ -531,6 +634,55 @@ def get_model(model_id: str, tools, params: ModelParams):
     raise ValueError(f"Unknown model_id: {model_id}")
 
 
+
+
+from typing import Literal, Optional
+from pydantic import BaseModel, Field
+
+class PlanStep(BaseModel):
+    step: int
+    action: Literal["query", "spatial_join", "aggregate"]
+
+    database: Optional[str] = None
+    sql: Optional[str] = None
+
+    left_source: Optional[int] = None
+    right_source: Optional[int] = None
+    join_type: Optional[Literal["intersects", "within", "contains", "dwithin"]] = None
+    left_geom: Optional[str] = None
+    right_geom: Optional[str] = None
+    distance_meters: Optional[float] = None
+
+    source_step: Optional[int] = None
+    group_by: list[str] = Field(default_factory=list)
+    metric_as: Optional[str] = None
+    order_by: Optional[str] = None
+    order_direction: Optional[Literal["asc", "desc"]] = None
+    limit: Optional[int] = 100
+
+
+class MultiDbPlan(BaseModel):
+    query_mode: Literal["multi_db"]
+    steps: list[PlanStep] = Field(default_factory=list)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ─────────────────────────────────────────────────────────────
 # State
 # ─────────────────────────────────────────────────────────────
@@ -589,6 +741,10 @@ class AgentState(TypedDict, total=False):
 
  
     attempt_number: int
+    run_id: str
+    validated_sqls: dict 
+    query_mode: Optional[Literal["single_db", "multi_db"]]
+    step_registry: dict  # step_number -> {sql, database, rows_returned, status
 
 
 # ─────────────────────────────────────────────────────────────
@@ -598,14 +754,33 @@ class AgentState(TypedDict, total=False):
 def _get_tools():
     return [
         kommune_where_clause,
-        execute_postgis_query,
-        tool_get_available_tables,
-        tool_validate_sql,
-        tool_get_table_schema,
         tool_get_available_databases,
         tool_get_available_schemas,
-    ]
+        tool_get_available_tables,
+        tool_get_table_schema,
+        #tool_get_database_catalog,
+        tool_validate_sql,
+        
 
+        tool_execute_query_step,
+        tool_execute_filter_step,
+        tool_execute_select_columns_step,
+        tool_execute_spatial_join_step,
+        tool_execute_attribute_join_step,
+        tool_execute_buffer_step,
+        tool_execute_nearest_step,
+        tool_execute_distance_step,
+        tool_execute_aggregate_step,
+        tool_execute_sort_step,
+        tool_execute_limit_step,
+        tool_execute_clip_step,
+        tool_execute_union_step,
+        tool_execute_intersection_step,
+        tool_execute_difference_step,
+        tool_execute_dissolve_step,
+        tool_execute_centroid_step,
+        tool_execute_transform_crs_step,
+    ]
 
 class AgentRunError(Exception):
     def __init__(self, message: str, snapshot: dict | None = None):
@@ -731,9 +906,61 @@ async def _model_node(state: AgentState) -> AgentState:
     state["crash_snapshot"] = _build_snapshot(state)
     return state
 
+
+
+
+
+
+
+def _extract_from_database_catalog(parsed: Any) -> tuple[list[str], list[str]]:
+    dbs = []
+    tables = []
+
+    if not isinstance(parsed, dict):
+        return dbs, tables
+
+    for db in parsed.get("databases", []):
+        db_name = db.get("database")
+        if db_name:
+            dbs.append(db_name)
+
+        for schema in db.get("schemas", []):
+            for table in schema.get("tables", []):
+                table_name = table.get("table")
+                if table_name:
+                    tables.append(table_name)
+
+    return dbs, tables
+
+
+
+
+
+
 async def _tools_node(state: AgentState) -> AgentState:
     tools = _get_tools()
     tool_map = {t.name: t for t in tools}
+
+    step_tools = {
+        "tool_execute_query_step",
+        "tool_execute_filter_step",
+        "tool_execute_select_columns_step",
+        "tool_execute_spatial_join_step",
+        "tool_execute_attribute_join_step",
+        "tool_execute_buffer_step",
+        "tool_execute_nearest_step",
+        "tool_execute_distance_step",
+        "tool_execute_aggregate_step",
+        "tool_execute_sort_step",
+        "tool_execute_limit_step",
+        "tool_execute_clip_step",
+        "tool_execute_union_step",
+        "tool_execute_intersection_step",
+        "tool_execute_difference_step",
+        "tool_execute_dissolve_step",
+        "tool_execute_centroid_step",
+        "tool_execute_transform_crs_step",
+    }
 
     ai = state["current_ai"]
     msgs = list(state["msgs"])
@@ -750,9 +977,12 @@ async def _tools_node(state: AgentState) -> AgentState:
         len(ai.tool_calls),
     )
 
+    def _norm(s: str) -> str:
+        return " ".join(s.split())
+
     for i, tc in enumerate(ai.tool_calls, start=1):
         name = tc["name"]
-        args = tc["args"]
+        args = dict(tc.get("args") or {})
         tool = tool_map[name]
         state["total_tool_calls"] = state.get("total_tool_calls", 0) + 1
 
@@ -761,50 +991,210 @@ async def _tools_node(state: AgentState) -> AgentState:
             + "    Tool call %s/%s\n"
             + "      name           : %s\n"
             + "      args           : %s",
-            i,
-            len(ai.tool_calls),
-            name,
-            args,
+            i, len(ai.tool_calls), name, args,
         )
 
         try:
-            if name == "execute_postgis_query":
-                sql = (args.get("sql") or "").strip()
-                state["last_sql"] = sql
+            if name in step_tools:
 
-                validated_sql = (state.get("last_validated_sql") or "").strip()
-                validation_ok = state.get("last_validation_ok", False)
+                if name == "tool_execute_query_step":
+                    run_id_val = args.get("run_id", "")
 
-                if not validation_ok or sql != validated_sql:
-                    logger.warning(
-                        "      guard          : blocked (validation_ok=%s, sql_matches=%s)",
-                        validation_ok,
-                        sql == validated_sql,
+                    if isinstance(run_id_val, dict):
+                        recovered = run_id_val
+                        if "action" in recovered or "sql" in recovered or "step" in recovered:
+                            logger.warning("      auto-fix E: run_id is dict → moved to step field")
+                            args["step"] = recovered
+
+                    elif isinstance(run_id_val, str) and run_id_val.strip().startswith("{"):
+                        try:
+                            recovered_step = json.loads(run_id_val)
+                            if "action" in recovered_step or "sql" in recovered_step:
+                                logger.warning("      auto-fix A: step object in run_id → moved to step field")
+                                args["step"] = recovered_step
+                        except json.JSONDecodeError:
+                            pass
+
+                    elif "action" in args and "sql" in args and not isinstance(args.get("step"), dict):
+                        logger.warning("      auto-fix B: flattened step object → wrapping into step field")
+                        args["step"] = {
+                            "step": args.pop("step", None),
+                            "action": args.pop("action", None),
+                            "database": args.pop("database", None),
+                            "sql": args.pop("sql", None),
+                            "validSql": args.pop("validSql", None),
+                        }
+
+                    args["run_id"] = state["run_id"]
+
+                    step_obj = dict(args.get("step") or {})
+                    sql = (step_obj.get("sql") or "").strip()
+                    step_number = step_obj.get("step")
+                    database = (step_obj.get("database") or "").strip()
+
+                    if sql:
+                        state["last_sql"] = sql
+
+                    validated_sqls = dict(state.get("validated_sqls", {}))
+                    validated_entry = validated_sqls.get(step_number)
+
+                    blocked = (
+                        validated_entry is None
+                        or _norm(validated_entry.get("sql", "")) != _norm(sql)
+                        or validated_entry.get("database", "") != database
                     )
-                    result = (
-                        "Error: SQL must be validated successfully before execution, "
-                        "and executed SQL must exactly match the validated SQL."
-                    )
+
+                    if blocked:
+                        logger.warning("      guard: blocked step=%s", step_number)
+                        result = json.dumps({
+                            "error": "tool_execute_query_step blocked.",
+                            "reason": "SQL or database does not match validated entry.",
+                            "expected": validated_entry,
+                            "received": {"step": step_number, "sql": sql, "database": database},
+                            "run_id": state["run_id"],
+                        }, default=str)
+                        exec_parsed = _parse_tool_result(result)
+                        exec_ok = False
+                        rows_returned = 0
+                    else:
+                        validated_sqls.pop(step_number, None)
+                        state["validated_sqls"] = validated_sqls
+                        result = await tool.ainvoke(args)
+
+                        exec_parsed = _parse_tool_result(result)
+                        exec_ok = isinstance(exec_parsed, dict) and exec_parsed.get("executed", False)
+                        rows_returned = exec_parsed.get("rows_returned", 0) if isinstance(exec_parsed, dict) else 0
+
+                    if step_number is not None:
+                        step_registry = dict(state.get("step_registry", {}))
+                        prev = dict(step_registry.get(step_number, {}))
+                        prev.update({
+                            "step": step_number,
+                            "action": "query",
+                            "sql": sql,
+                            "database": database,
+                            "validated": prev.get("validated", False),
+                            "executed": exec_ok,
+                            "rows_returned": rows_returned,
+                            "status": "ok" if exec_ok else "error",
+                        })
+                        step_registry[step_number] = prev
+                        state["step_registry"] = step_registry
+
+                    logger.debug("      result         : %s", _short(str(result), 3000))
+
+                    state["last_executed_result"] = exec_parsed
+                    state["last_execute_ok"] = exec_ok
+                    state["last_execute_error"] = None if exec_ok else str(result)
+
+                    if not exec_ok:
+                        is_blocked = '"error": "tool_execute_query_step blocked."' in str(result)
+                        if not is_blocked:
+                            state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
+                            state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
+                        state["all_errors"] = _dedup(
+                            list(state.get("all_errors", [])) + [str(result)]
+                        )
+                    else:
+                        state["last_validation_error"] = None
+
+
+
+
+
+
+                 
                 else:
+                    run_id_val = args.get("run_id", "")
+
+                    if isinstance(run_id_val, dict):
+                        recovered = run_id_val
+                        if "action" in recovered or "sql" in recovered or "step" in recovered:
+                            logger.warning("      auto-fix E: run_id is dict → moved to step field (tool=%s)", name)
+                            args["step"] = recovered
+
+                    elif isinstance(run_id_val, str) and run_id_val.strip().startswith("{"):
+                        try:
+                            recovered_step = json.loads(run_id_val)
+                            if "action" in recovered_step or "step" in recovered_step:
+                                logger.warning("      auto-fix C: step object in run_id → moved to step field (tool=%s)", name)
+                                args["step"] = recovered_step
+                        except json.JSONDecodeError:
+                            pass
+
+                    elif "action" in args and not isinstance(args.get("step"), dict):
+                        logger.warning("      auto-fix D: flattened step object → wrapping into step field (tool=%s)", name)
+                        args["step"] = {
+                            k: args.pop(k)
+                            for k in [
+                                "step", "action", "left_source", "right_source", "source_step",
+                                "join_type", "left_geom", "right_geom", "distance_meters",
+                                "group_by", "aggregation_type", "metric_column", "metric_as",
+                                "order_by", "order_direction", "limit", "buffer_distance",
+                                "target_crs", "join_keys", "select_columns", "filters", "output_columns",
+                            ]
+                            if k in args
+                        }
+
+                    args["run_id"] = state["run_id"]
+
+                    step_obj = dict(args.get("step") or {})
+                    step_number = step_obj.get("step")
+                    action = step_obj.get("action")
+
                     result = await tool.ainvoke(args)
+                    parsed_result = _parse_tool_result(result)
+                    exec_ok = isinstance(parsed_result, dict) and parsed_result.get("executed", False)
+                    rows_returned = parsed_result.get("rows_returned", 0) if isinstance(parsed_result, dict) else 0
 
-                logger.debug("      result         : %s", _short(str(result), 300))
-                parsed = _parse_tool_result(result)
-                state["last_executed_result"] = parsed
-                state["last_execute_ok"] = not str(result).startswith("Error")
-                state["last_execute_error"] = None if state["last_execute_ok"] else str(result)
+                    if step_number is not None:
+                        step_registry = dict(state.get("step_registry", {}))
+                        prev = dict(step_registry.get(step_number, {}))
+                        prev.update({
+                            "step": step_number,
+                            "action": action,
+                            "executed": exec_ok,
+                            "rows_returned": rows_returned,
+                            "status": "ok" if exec_ok else "error",
+                        })
+                        step_registry[step_number] = prev
+                        state["step_registry"] = step_registry
 
-                if not state["last_execute_ok"]:
-                    state["all_errors"] = _dedup(
-                        list(state.get("all_errors", [])) + [str(result)]
-                    )
+                    logger.debug("      result         : %s", _short(str(result), 3000))
+
+                    state["last_executed_result"] = parsed_result
+                    state["last_execute_ok"] = exec_ok
+                    state["last_execute_error"] = None if exec_ok else str(result)
+
+                    if not exec_ok:
+                        state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
+                        state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
+                        state["all_errors"] = _dedup(
+                            list(state.get("all_errors", [])) + [str(result)]
+                        )
+                    else:
+                        state["last_validation_error"] = None
+
+
+
+
 
             else:
                 result = await tool.ainvoke(args)
                 logger.debug("      result         : %s", _short(str(result), 300))
                 parsed = _parse_tool_result(result)
 
-                if name == "tool_get_available_databases":
+                if name == "tool_get_database_catalog":
+                    dbs, tables = _extract_from_database_catalog(parsed)
+                    state["discovered_databases"] = _dedup(
+                        list(state.get("discovered_databases", [])) + dbs
+                    )
+                    state["discovered_tables"] = _dedup(
+                        list(state.get("discovered_tables", [])) + tables
+                    )
+
+            
+                elif  name == "tool_get_available_databases":
                     dbs = _extract_databases_from_result(parsed)
                     state["discovered_databases"] = _dedup(
                         list(state.get("discovered_databases", [])) + dbs
@@ -825,14 +1215,57 @@ async def _tools_node(state: AgentState) -> AgentState:
 
                 elif name == "tool_validate_sql":
                     sql = (args.get("sql") or "").strip()
-                    ok = str(result).strip().lower() == "ok"
+                    step_number = args.get("step_number")
+                    database = (args.get("databaseName") or "").strip()
+
+                    parsed_result = _parse_tool_result(result)
+                    ok = (
+                        (isinstance(parsed_result, dict) and parsed_result.get("validated") is True)
+                        or str(result).strip().lower() == "ok"
+                    )
+
+                    if ok and step_number is None:
+                        result = "Error: step_number=<integer> is required in tool_validate_sql. Retry with step_number."
+                        ok = False
+
                     state["last_sql"] = sql
-                    state["last_validated_sql"] = sql if ok else None
                     state["last_validation_ok"] = ok
-                    state["valid_sql"] = ok
                     state["last_validation_error"] = None if ok else str(result)
 
-                    if not ok:
+                    if step_number is not None:
+                        step_registry = dict(state.get("step_registry", {}))
+                        prev = dict(step_registry.get(step_number, {}))
+                        prev.update({
+                            "step": step_number,
+                            "action": prev.get("action", "query"),
+                            "sql": sql,
+                            "database": database,
+                            "validated": ok,
+                            "executed": prev.get("executed", False),
+                            "rows_returned": prev.get("rows_returned", 0),
+                            "status": prev.get("status", "pending"),
+                        })
+                        step_registry[step_number] = prev
+                        state["step_registry"] = step_registry
+
+                    if ok:
+                        state["last_validated_sql"] = sql
+                        validated_sqls = dict(state.get("validated_sqls", {}))
+                        validated_sqls[step_number] = {"sql": sql, "database": database}
+                        state["validated_sqls"] = validated_sqls
+
+                        result = json.dumps({
+                            "validated": True,
+                            "step_number": step_number,
+                            "database": database,
+                            "next_action": (
+                                f"call tool_execute_query_step with step.step={step_number}, "
+                                f"step.action='query', step.database='{database}', "
+                                "step.sql=<identical sql>, step.validSql='ok'"
+                            ),
+                        }, default=str)
+                    else:
+                        state["last_validated_sql"] = None
                         state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
                         state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
                         state["all_errors"] = _dedup(
@@ -876,6 +1309,57 @@ async def _tools_node(state: AgentState) -> AgentState:
     state["current_run_log"] = run_log
     state["crash_snapshot"] = _build_snapshot(state)
     return state
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -945,28 +1429,24 @@ def _restart_or_finish_node(state: AgentState) -> AgentState:
         "valid_sql": False,
         "current_ai_is_final_answer": False,
         "done": False,
-
-
+        "validated_sqls": {},
+        "step_registry": {},
     }
+
+
+    
     new_state["crash_snapshot"] = _build_snapshot(new_state)
     return new_state
 
 
+# ─────────────────────────────────────────────────────────────
+# finalize
+# ─────────────────────────────────────────────────────────────
 def _finalize_node(state: AgentState) -> AgentState:
     current_answer = ""
     ai = state.get("current_ai")
     if ai and state.get("current_ai_is_final_answer", False):
         current_answer = (ai.content or "").strip()
-
-    executed = state.get("last_execute_ok", False)
-    has_result = state.get("last_executed_result") is not None
-    has_answer = bool(current_answer)
-
-    if not executed:
-        current_answer = ""
-        state["all_errors"] = _dedup(
-            list(state.get("all_errors", [])) + ["No successful database execution."]
-        )
 
     if state.get("current_run_log"):
         all_run_logs = list(state.get("all_run_logs", []))
@@ -976,38 +1456,78 @@ def _finalize_node(state: AgentState) -> AgentState:
             all_run_logs.append(new_entry)
         state["all_run_logs"] = all_run_logs
 
+    steps = dict(state.get("step_registry", {}))
+    query_steps = [s for s in steps.values() if s.get("action") == "query"]
+
+    if query_steps:
+        all_validated = all(s.get("validated", False) for s in query_steps)
+        all_executed = all(s.get("executed", False) for s in steps.values())
+    else:
+        # fallback for single_db without populated step_registry
+        all_validated = state.get("last_validation_ok", False)
+        all_executed = state.get("last_execute_ok", False)
+
+    has_result = state.get("last_executed_result") is not None
+    has_answer = bool(current_answer)
+
+    if not all_executed:
+        current_answer = ""
+        state["all_errors"] = _dedup(
+            list(state.get("all_errors", [])) + ["Not all planned steps executed successfully."]
+        )
+
+    state["valid_sql"] = all_validated
+    state["last_execute_ok"] = all_executed
     state["answer"] = current_answer
-    state["answer_based_on_result"] = executed and has_result and has_answer
-    state["task_completed"] = executed and has_result
+    state["answer_based_on_result"] = all_executed and has_result and has_answer
+    state["task_completed"] = all_executed and has_result and has_answer
     state["done"] = True
     state["crash_snapshot"] = _build_snapshot(state)
     return state
-
-
 # ─────────────────────────────────────────────────────────────
 # Routing
 # ─────────────────────────────────────────────────────────────
 
 def _route_after_model(state: AgentState) -> str:
     ai = state["current_ai"]
-    if state["iterations"] >= state["max_iterations"]:
-        return "restart_or_finish"
+
+    # If the model already gave the final text answer
     if not ai.tool_calls:
         return "finalize" if state.get("last_execute_ok") else "restart_or_finish"
+
+    # Only stop on max iterations if the model still wants to call tools
+    if state["iterations"] >= state["max_iterations"]:
+        return "restart_or_finish"
+
     return "tools"
 
 
 def _route_after_tools(state: AgentState) -> str:
     if state.get("last_execute_ok", False):
-        return "finalize"
+        ai = state.get("current_ai")
+        # Bare avslutt hvis modellen ga en tekstlig sluttrespons (ingen tool calls)
+        if ai and not ai.tool_calls:
+            return "finalize"
+        # Ellers fortsett — agenten har flere steg igjen
+        return "model"
+
+
+
     if state.get("last_validation_error"):
-        if state.get("sql_repair_count", 0) < state.get("max_sql_repairs", 0):
+        if state.get("sql_repair_count", 0) <= state.get("max_sql_repairs", 0):
             return "sql_repair"
         return "restart_or_finish"
+    
+    
     if state.get("last_execute_error"):
-        if state.get("sql_repair_count", 0) < state.get("max_sql_repairs", 0):
+        last_err = state.get("last_execute_error", "")
+        if '"error": "tool_execute_query_step blocked."' in last_err:
+            return "model"
+        if state.get("sql_repair_count", 0) <= state.get("max_sql_repairs", 0):
             return "sql_repair"
         return "restart_or_finish"
+   
+   
     if state.get("iterations", 0) >= state.get("max_iterations", 0):
         return "restart_or_finish"
     return "model"
@@ -1063,7 +1583,6 @@ def _build_agent_graph():
 # ─────────────────────────────────────────────────────────────
 # Agent / pipeline
 # ─────────────────────────────────────────────────────────────
-
 async def agent(
     user_input: str,
     model_id: str,
@@ -1109,6 +1628,10 @@ async def agent(
         "total_api_calls": 0,
         "crash_snapshot": {},
         "attempt_number": attempt_number,
+        "run_id": uuid.uuid4().hex,
+        "validated_sqls": {},
+        "query_mode": None,
+        "step_registry": {},
     }
 
     state = init_state
@@ -1126,9 +1649,24 @@ async def agent(
         total_tokens=state["grand_total_tokens"]["total_tokens"],
     )
 
+    steps = dict(state.get("step_registry", {}))
+    query_steps = [s for s in steps.values() if s.get("action") == "query"]
+
+    if len(query_steps) == 1:
+        # single query step uansett antall steg totalt
+        final_sql = query_steps[0].get("sql") or state.get("last_validated_sql") or state.get("last_sql")
+    elif not steps:
+        final_sql = state.get("last_validated_sql") or state.get("last_sql")
+    else:
+        # flere query-steps — list alle
+        final_sql = "\n\n-- STEP BOUNDARY --\n\n".join(
+            s.get("sql", "") for s in sorted(query_steps, key=lambda x: x.get("step", 0))
+            if s.get("sql")
+        ) or None
+
     return AgentResult(
         answer=state["answer"],
-        sql=state.get("last_validated_sql") or state.get("last_sql"),
+        sql=final_sql,
         result_data=state.get("last_executed_result"),
         executed=state.get("last_execute_ok", False),
         valid_sql=state.get("valid_sql", False),
@@ -1142,7 +1680,6 @@ async def agent(
         iterations=state.get("total_iterations", 0),
         total_api_calls=state.get("total_api_calls", 0),
     )
-
 
 async def pipeline(
     question: str,
@@ -1183,66 +1720,81 @@ async def pipeline(
 # ─────────────────────────────────────────────────────────────
 # Trace extraction
 # ─────────────────────────────────────────────────────────────
+# Trace extraction
+# ─────────────────────────────────────────────────────────────
 
 def extract_agent_trace(result: PipelineResult) -> AgentTrace:
-    tables, databases, executions = [], [], []
+    tables, databases = [], []
     total_tool_calls = 0
     tool_call_counts: dict[str, int] = {}
-    validated_sqls_ok: set[str] = set()
-    executed_sqls: list[str] = []
+    executions: list[dict] = []
+    merged_step_registry: dict = {}
 
     if not result.run_logs:
-        return AgentTrace([], [], [], [], False, False, 0, [], {})
+        return AgentTrace(
+            [], [], [], [],
+            result.valid_sql,
+            result.executed,
+            0,
+            [],
+            {},
+        )
 
     for run in result.run_logs:
+        for db in run.get("discovered_databases", []):
+            if db not in databases:
+                databases.append(db)
+
+        for tbl in run.get("discovered_tables", []):
+            if tbl not in tables:
+                tables.append(tbl)
+
+        for step_no, meta in (run.get("step_registry") or {}).items():
+            merged_step_registry[step_no] = meta
+
         for entry in (run.get("iterations") or []):
             for t in entry.get("tools", []):
                 total_tool_calls += 1
                 tool_name = t.get("tool")
-                args = t.get("args", {})
-                tool_result = t.get("result")
-
                 if tool_name:
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
 
-                db = args.get("databaseName") or args.get("database")
-                if db and db not in databases:
-                    databases.append(db)
-
-                if tool_name == "tool_get_table_schema":
-                    table = args.get("table_name")
-                    if table and table not in tables:
-                        tables.append(table)
-
-                if tool_name == "tool_get_available_tables":
-                    for table in t.get("result_tables", []):
-                        if table and table not in tables:
-                            tables.append(table)
-
-                if tool_name == "tool_validate_sql":
-                    sql = (args.get("sql") or "").strip()
-                    if str(tool_result).strip().lower() == "ok" and sql:
-                        validated_sqls_ok.add(sql)
-
-                if tool_name == "execute_postgis_query":
-                    sql = (args.get("sql") or "").strip()
-                    executed_sqls.append(sql)
-                    ok = not str(tool_result).startswith("Error")
-                    executions.append({
-                        "iteration": entry.get("iteration"),
-                        "database": db,
-                        "sql": sql,
-                        "success": ok,
-                        "error": tool_result if not ok else None,
-                    })
+    for step_no, meta in sorted(
+        merged_step_registry.items(),
+        key=lambda x: int(x[0]) if str(x[0]).isdigit() else str(x[0])
+    ):
+        executions.append({
+            "iteration": None,
+            "step": step_no,
+            "database": meta.get("database"),
+            "sql": meta.get("sql"),
+            "success": meta.get("executed", False),
+            "error": None if meta.get("executed", False) else meta.get("status"),
+            "rows_returned": meta.get("rows_returned"),
+            "status": meta.get("status"),
+        })
 
     successful = [e for e in executions if e["success"]]
-    all_sql_text = " ".join((e["sql"] or "").lower() for e in successful)
+    all_sql_text = " ".join((e.get("sql") or "").lower() for e in successful)
+
     tables_in_result = [t for t in tables if t.lower() in all_sql_text]
-    databases_in_result = list(
-        dict.fromkeys(e["database"] for e in successful if e["database"])
-    )
-    validated = any(sql in validated_sqls_ok for sql in executed_sqls if sql)
+    databases_in_result = list(dict.fromkeys(
+        e["database"] for e in successful if e.get("database")
+    ))
+
+    query_steps_trace = [
+        s for s in merged_step_registry.values()
+        if s.get("action") == "query"
+    ]
+
+    if query_steps_trace:
+        validated = all(s.get("validated", False) for s in query_steps_trace)
+        executed_successfully = all(
+            s.get("executed", False) for s in merged_step_registry.values()
+        )
+    else:
+        validated = result.valid_sql
+        executed_successfully = result.executed
 
     return AgentTrace(
         tables_explored=tables,
@@ -1250,13 +1802,11 @@ def extract_agent_trace(result: PipelineResult) -> AgentTrace:
         databases_explored=databases,
         databases_in_result=databases_in_result,
         validated_before_exec=validated,
-        executed_successfully=result.executed,
+        executed_successfully=executed_successfully,
         total_tool_calls=total_tool_calls,
         executions=executions,
         tool_call_counts=tool_call_counts,
     )
-
-
 # ─────────────────────────────────────────────────────────────
 # Printing
 # ─────────────────────────────────────────────────────────────
@@ -1299,7 +1849,7 @@ def _print_summary(query: str, results: list):
                 "-",
                 "-",
                 "-",
-                _short(str(r), 200),
+                _short(str(r), 300),
             )
             continue
 
@@ -1336,7 +1886,6 @@ def _print_details(results: list):
             continue
 
         trace = extract_agent_trace(r)
-
         logger.info("[%s]", r.model_id)
         logger.info("  valid_sql          : %s", r.valid_sql)
         logger.info("  executed           : %s", r.executed)
@@ -1345,6 +1894,23 @@ def _print_details(results: list):
         logger.info("  restarts           : %s", r.restarts_used)
         logger.info("  latency_s          : %.3f", r.latency_s)
         logger.info("  api_calls          : %s", r.total_api_calls)
+
+        step_registry = {}
+        for run in (r.run_logs or []):
+            step_registry.update(run.get("step_registry", {}))
+
+        if step_registry:
+            logger.info("\n  STEP REGISTRY:")
+            for step_no, meta in sorted(step_registry.items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else str(x[0])):
+                logger.info("    Step %s:", step_no)
+                logger.info("      database        : %s", meta.get("database"))
+                logger.info("      validated       : %s", meta.get("validated"))
+                logger.info("      executed        : %s", meta.get("executed"))
+                logger.info("      rows_returned   : %s", meta.get("rows_returned"))
+                logger.info("      status          : %s", meta.get("status"))
+                logger.info("      sql             : %s", meta.get("sql"))
+
+       
 
         if r.tokens:
             logger.info(
@@ -1417,17 +1983,40 @@ def _print_details(results: list):
                         len(entry.get("tool_calls", [])),
                     )
 
+
+
+
+
+
+
                     for t in entry.get("tools", []):
                         logger.info("          TOOL   : %s", t["tool"])
                         logger.info("          ARGS   : %s", t["args"])
                         if t["tool"] == "tool_validate_sql":
-                            ok = str(t["result"]).strip().lower() == "ok"
+                            raw = str(t["result"]).strip()
+                            parsed = None
+
+                            try:
+                                parsed = json.loads(raw)
+                                ok = isinstance(parsed, dict) and parsed.get("validated") is True
+                            except (json.JSONDecodeError, TypeError):
+                                ok = raw.lower() == "ok"
+
                             logger.info(
                                 "          RESULT : %s",
-                                "ok" if ok else "fail: " + str(t["result"]),
+                                f"ok (step={parsed.get('step_number')})" if ok and parsed else f"ok" if ok else f"fail: {raw[:200]}",
                             )
                         else:
                             logger.info("          RESULT : %s", t["result"])
+
+
+
+
+
+
+
+
+
 
         logger.info("\n  FINAL:")
         logger.info("    answer            : %s", r.final_answer or "(none)")
@@ -1447,7 +2036,7 @@ def _print_details(results: list):
 async def store_run(run: EvalRun, results: list) -> str:
     q_hash = query_hash(run.query)
     run_id = uuid.uuid4().hex
-    base = f"agent_benchmark_runs/{q_hash}/runs/{run_id}"
+    base = f"agent_benchmark_runstest/{q_hash}/runs/{run_id}"
 
     result_data_by_model = {
         r.model_id: r.result_data
@@ -1467,7 +2056,7 @@ async def store_run(run: EvalRun, results: list) -> str:
         _update_queries_index(q_hash, run.query)
         if not query_meta_exists(q_hash):
             await _upload(
-                f"agent_benchmark_runs/{q_hash}/meta.json",
+                f"agent_benchmark_runstest/{q_hash}/meta.json",
                 {"query": run.query, "query_hash": q_hash},
             )
     except Exception as e:
@@ -1522,11 +2111,7 @@ async def store_run(run: EvalRun, results: list) -> str:
         else:
             trace = extract_agent_trace(r)
             tokens = asdict(r.tokens) if r.tokens else _empty_token_dict()
-            status = (
-                "completed" if r.executed
-                else "error" if r.all_errors
-                else "incomplete"
-            )
+            status = "completed" if r.task_completed else "incomplete"
             doc = {
                 "run_id": run_id,
                 "query": run.query,
@@ -1742,12 +2327,12 @@ async def main():
     logger.setLevel(logging.DEBUG)
 
     queries = [
-        "Count the number of parcels in flood hazard zones per county.",
+        " Find parcels that are located in agricultural land, overlap flood hazard zones, and also overlap soil- and flood-landslide hazard areas. Return the matching parcels together with their municipality.",
     ]
 
     model_ids = [
-        "gpt-35-turbo",
-        "gpt-4",
+
+      "gpt-5-mini"
     ]
 
     params = ModelParams(
@@ -1755,9 +2340,9 @@ async def main():
         max_tokens=2000,
         timeout=120,
         max_retries=0,
-        max_iterations=12,
+        max_iterations=18,
         max_sql_repairs=3,
-        max_restarts=3,
+        max_restarts=2,
     )
 
     prompt_name = "prompt_v1"
