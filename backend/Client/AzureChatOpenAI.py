@@ -234,6 +234,8 @@ class ModelParams:
     top_p: float | None = None
     reasoning_effort: str | None = None
 
+    max_step_retries: int = 3
+
 
 @dataclass
 class AgentResult:
@@ -349,6 +351,13 @@ def load_prompt(name: str) -> str:
 # Helpers
 # ─────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
 def _short(s: str, n: int = 120) -> str:
     s = (s or "").replace("\n", " ").strip()
     return s if len(s) <= n else s[: n - 3] + "..."
@@ -394,7 +403,7 @@ def _parse_tool_result(raw: Any) -> Any:
         try:
             return json.loads(raw)
         except Exception:
-            return raw
+            return {"executed": False, "error": raw}
     return raw
 
 
@@ -639,37 +648,48 @@ def get_model(model_id: str, tools, params: ModelParams):
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
+
+
+
 class PlanStep(BaseModel):
     step: int
-    action: Literal["query", "spatial_join", "aggregate"]
-
+    action: Literal[
+        "query", "filter", "select_columns", "spatial_join", "attribute_join",
+        "buffer", "nearest", "distance", "aggregate", "sort", "limit",
+        "clip", "union", "intersection", "difference", "dissolve", "centroid", "transform_crs",
+    ]
     database: Optional[str] = None
     sql: Optional[str] = None
-
+    validSql: Optional[str] = None
+    source_step: Optional[int] = None
     left_source: Optional[int] = None
     right_source: Optional[int] = None
-    join_type: Optional[Literal["intersects", "within", "contains", "dwithin"]] = None
+    join_type: Optional[Literal["intersects", "within", "contains", "dwithin", "touches", "overlaps"]] = None
     left_geom: Optional[str] = None
     right_geom: Optional[str] = None
     distance_meters: Optional[float] = None
-
-    source_step: Optional[int] = None
+    buffer_distance: Optional[float] = None
+    filters: list[str] = Field(default_factory=list)
+    select_columns: list[str] = Field(default_factory=list)
+    output_columns: list[str] = Field(default_factory=list)
     group_by: list[str] = Field(default_factory=list)
+    aggregation_type: Optional[Literal["count", "sum", "avg", "min", "max"]] = None
+    metric_column: Optional[str] = None
     metric_as: Optional[str] = None
     order_by: Optional[str] = None
     order_direction: Optional[Literal["asc", "desc"]] = None
-    limit: Optional[int] = 100
+    limit: Optional[int] = None
+    target_crs: Optional[str] = None
+    join_keys: list[str] = Field(default_factory=list)
 
 
-class MultiDbPlan(BaseModel):
-    query_mode: Literal["multi_db"]
+
+
+
+
+class QueryPlan(BaseModel):
+    query_mode: Literal["single_db", "multi_db"]
     steps: list[PlanStep] = Field(default_factory=list)
-
-
-
-
-
-
 
 
 
@@ -692,59 +712,117 @@ class AgentState(TypedDict, total=False):
     model_id: str
     prompt: str
     params: ModelParams
-
+ 
     msgs: list
     iterations: int
     max_iterations: int
-
+ 
     sql_repair_count: int
     max_sql_repairs: int
-
+ 
     restart_count: int
     max_restarts: int
-
+ 
     current_run_log: list
     all_run_logs: list
-
+ 
     attempt_tokens: dict
     grand_total_tokens: dict
     current_iter_tokens: dict
-
+ 
     last_sql: Optional[str]
     last_validated_sql: Optional[str]
     last_validation_ok: bool
     last_validation_error: Optional[str]
-
-    last_executed_result: Any
+ 
+    last_executed_result: Any        # LLM-facing summary from server (not raw rows)
     last_execute_ok: bool
     last_execute_error: Optional[str]
-
+    last_failed_step: Optional[int]  # set explicitly on any validate/exec failure
+ 
     discovered_tables: list[str]
     discovered_databases: list[str]
-
+ 
     current_ai: Any
     current_ai_is_final_answer: bool
     valid_sql: bool
     answer: str
     all_errors: list[str]
     done: bool
-
+ 
     answer_based_on_result: bool
     task_completed: bool
-
+ 
     total_sql_repairs: int
     total_iterations: int
     total_tool_calls: int
     total_api_calls: int
-
-    crash_snapshot: dict
-
+    step_retry_count: int            # global counter for non-SQL step failures
+    total_step_retries: int
  
+    step_retry_counts: dict          # {step_number: int} — per-step retry budget
+    step_registry: dict              # {step_number: {sql, database, validated, executed, ...}}
+    validated_sqls: dict             # {step_number: {sql, database}} — cleared after exec
+ 
+    iter_had_error: bool
+    iter_had_validation_error: bool
+    iter_any_exec_ok: bool
+ 
+    plan_locked: bool
+    locked_step_ids: set             # step numbers belonging to the locked plan
+ 
+    crash_snapshot: dict
     attempt_number: int
     run_id: str
-    validated_sqls: dict 
     query_mode: Optional[Literal["single_db", "multi_db"]]
-    step_registry: dict  # step_number -> {sql, database, rows_returned, status
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def _increment_step_retry(state: AgentState, step_number: int) -> None:
+    """Increment per-step retry counter. No-op if step_number is None."""
+    if step_number is None:
+        return
+    counts = dict(state.get("step_retry_counts", {}))
+    counts[step_number] = counts.get(step_number, 0) + 1
+    state["step_retry_counts"] = counts
+ 
+ 
+def _step_retry_ok(state: AgentState, step_number: int, max_retries: int = 3) -> bool:
+    """True if this step still has retry budget remaining."""
+    if step_number is None:
+        return False
+    return state.get("step_retry_counts", {}).get(step_number, 0) < max_retries
+ 
+
+
+
+
+
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -758,7 +836,7 @@ def _get_tools():
         tool_get_available_schemas,
         tool_get_available_tables,
         tool_get_table_schema,
-        #tool_get_database_catalog,
+        tool_get_database_catalog,
         tool_validate_sql,
         
 
@@ -771,12 +849,17 @@ def _get_tools():
         tool_execute_nearest_step,
         tool_execute_distance_step,
         tool_execute_aggregate_step,
+
+
+
         tool_execute_sort_step,
         tool_execute_limit_step,
         tool_execute_clip_step,
         tool_execute_union_step,
         tool_execute_intersection_step,
         tool_execute_difference_step,
+
+
         tool_execute_dissolve_step,
         tool_execute_centroid_step,
         tool_execute_transform_crs_step,
@@ -937,415 +1020,912 @@ def _extract_from_database_catalog(parsed: Any) -> tuple[list[str], list[str]]:
 
 
 
+
+
+
+
+
+
+
+# async def _tools_node(state: AgentState) -> AgentState:
+#     tools = _get_tools()
+#     tool_map = {t.name: t for t in tools}
+
+#     step_tools = {
+#         "tool_execute_query_step",
+#         "tool_execute_filter_step",
+#         "tool_execute_select_columns_step",
+#         "tool_execute_spatial_join_step",
+#         "tool_execute_attribute_join_step",
+#         "tool_execute_buffer_step",
+#         "tool_execute_nearest_step",
+#         "tool_execute_distance_step",
+#         "tool_execute_aggregate_step",
+#         "tool_execute_sort_step",
+#         "tool_execute_limit_step",
+#         "tool_execute_clip_step",
+#         "tool_execute_union_step",
+#         "tool_execute_intersection_step",
+#         "tool_execute_difference_step",
+#         "tool_execute_dissolve_step",
+#         "tool_execute_centroid_step",
+#         "tool_execute_transform_crs_step",
+#     }
+
+#     ai = state["current_ai"]
+#     msgs = list(state["msgs"])
+#     iteration_tools = []
+
+#     iter_had_error = False
+#     iter_had_validation_error = False
+#     iter_any_exec_ok = False
+
+#     def _norm(s: str) -> str:
+#         return " ".join((s or "").split())
+
+#     def _append_error(err_msg: str) -> None:
+#         state["all_errors"] = _dedup(list(state.get("all_errors", [])) + [err_msg])
+
+#     for i, tc in enumerate(ai.tool_calls, start=1):
+#         name = tc["name"]
+#         raw_args = dict(tc.get("args") or {})
+#         args = dict(raw_args)
+#         tool = tool_map[name]
+#         state["total_tool_calls"] = state.get("total_tool_calls", 0) + 1
+
+#         try:
+#             if name in step_tools:
+#                 args["run_id"] = state["run_id"]
+
+#                 if name == "tool_execute_query_step":
+#                     step_obj = args.get("step")
+
+#                     if not isinstance(step_obj, dict):
+#                         result = json.dumps({
+#                             "executed": False,
+#                             "error": "tool_execute_query_step blocked.",
+#                             "reason": "Missing or invalid step object.",
+#                             "step": None,
+#                             "action": "query",
+#                         })
+#                         exec_parsed = _parse_tool_result(result)
+#                         exec_ok = False
+#                         rows_returned = 0
+#                         step_number = None
+#                         sql = ""
+#                         database = ""
+#                     else:
+#                         step_obj = dict(step_obj)
+#                         sql = (step_obj.get("sql") or "").strip()
+#                         step_number = step_obj.get("step")
+#                         database = (step_obj.get("database") or "").strip()
+#                         action = step_obj.get("action")
+#                         valid_sql_flag = step_obj.get("validSql")
+
+#                         if sql:
+#                             state["last_sql"] = sql
+
+#                         validated_sqls = dict(state.get("validated_sqls", {}))
+#                         validated_entry = validated_sqls.get(step_number)
+
+#                         blocked_reason = None
+#                         if action != "query":
+#                             blocked_reason = "step.action must be 'query'."
+#                         elif valid_sql_flag != "ok":
+#                             blocked_reason = "step.validSql must be 'ok'."
+#                         elif step_number is None:
+#                             blocked_reason = "step.step is required."
+#                         elif not database:
+#                             blocked_reason = "step.database is required."
+#                         elif not sql:
+#                             blocked_reason = "step.sql is required."
+#                         elif validated_entry is None:
+#                             blocked_reason = "No validated SQL found for this step."
+#                         elif _norm(validated_entry.get("sql", "")) != _norm(sql):
+#                             blocked_reason = "SQL does not match validated entry."
+#                         elif validated_entry.get("database", "") != database:
+#                             blocked_reason = "Database does not match validated entry."
+
+#                         if blocked_reason:
+#                             result = json.dumps({
+#                                 "executed": False,
+#                                 "error": "tool_execute_query_step blocked.",
+#                                 "reason": blocked_reason,
+#                                 "step": step_number,
+#                                 "action": "query",
+#                             })
+#                             exec_parsed = _parse_tool_result(result)
+#                             exec_ok = False
+#                             rows_returned = 0
+#                         else:
+#                             result = await tool.ainvoke(args)
+#                             exec_parsed = _parse_tool_result(result)
+#                             exec_ok = isinstance(exec_parsed, dict) and exec_parsed.get("executed", False)
+#                             rows_returned = exec_parsed.get("rows_returned", 0) if isinstance(exec_parsed, dict) else 0
+
+#                             if exec_ok:
+#                                 validated_sqls.pop(step_number, None)
+#                                 state["validated_sqls"] = validated_sqls
+
+#                     if step_number is not None:
+#                         step_registry = dict(state.get("step_registry", {}))
+#                         prev = dict(step_registry.get(step_number, {}))
+#                         prev.update({
+#                             "step": step_number,
+#                             "action": "query",
+#                             "sql": sql,
+#                             "database": database,
+#                             "validated": prev.get("validated", False),
+#                             "executed": exec_ok,
+#                             "rows_returned": rows_returned,
+#                             "status": "ok" if exec_ok else "error",
+#                         })
+#                         step_registry[step_number] = prev
+#                         state["step_registry"] = step_registry
+
+#                     state["last_executed_result"] = exec_parsed
+#                     state["last_execute_error"] = None if exec_ok else json.dumps(exec_parsed, ensure_ascii=False)
+
+#                     if exec_ok:
+#                         iter_any_exec_ok = True
+#                         state["last_failed_step"] = None
+#                     else:
+#                         iter_had_error = True
+#                         state["last_failed_step"] = step_number
+#                         if not (isinstance(exec_parsed, dict) and exec_parsed.get("error") == "tool_execute_query_step blocked."):
+#                             _increment_step_retry(state, step_number)
+#                             state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
+#                             state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
+#                         _append_error(json.dumps(exec_parsed, ensure_ascii=False))
+
+#                 else:
+#                     step_obj = args.get("step")
+
+#                     if not isinstance(step_obj, dict):
+#                         action_name = name.replace("tool_execute_", "").replace("_step", "")
+#                         result = json.dumps({
+#                             "executed": False,
+#                             "error": f"{name} blocked.",
+#                             "reason": "Missing or invalid step object.",
+#                             "step": None,
+#                             "action": action_name,
+#                         })
+#                         parsed_result = _parse_tool_result(result)
+#                         exec_ok = False
+#                         rows_returned = 0
+#                         step_number = None
+#                         action = None
+#                     else:
+#                         step_obj = dict(step_obj)
+#                         step_number = step_obj.get("step")
+#                         action = step_obj.get("action")
+
+#                         blocked_reason = None
+#                         if action == "aggregate" and step_obj.get("source_step") is None:
+#                             blocked_reason = "aggregate requires source_step."
+#                         elif action in {"filter", "select_columns", "sort", "limit", "buffer", "centroid", "transform_crs", "dissolve", "union"} and step_obj.get("source_step") is None:
+#                             blocked_reason = f"{action} requires source_step."
+#                         elif action in {"spatial_join", "intersection", "difference", "clip", "nearest", "distance"}:
+#                             if step_obj.get("left_source") is None or step_obj.get("right_source") is None:
+#                                 blocked_reason = f"{action} requires left_source and right_source."
+#                         elif action == "attribute_join":
+#                             if step_obj.get("left_source") is None or step_obj.get("right_source") is None:
+#                                 blocked_reason = "attribute_join requires left_source and right_source."
+
+#                         if blocked_reason:
+#                             result = json.dumps({
+#                                 "executed": False,
+#                                 "error": f"{name} blocked.",
+#                                 "reason": blocked_reason,
+#                                 "step": step_number,
+#                                 "action": action,
+#                             })
+#                             parsed_result = _parse_tool_result(result)
+#                             exec_ok = False
+#                             rows_returned = 0
+#                         else:
+#                             result = await tool.ainvoke(args)
+#                             parsed_result = _parse_tool_result(result)
+#                             exec_ok = isinstance(parsed_result, dict) and parsed_result.get("executed", False)
+#                             rows_returned = parsed_result.get("rows_returned", 0) if isinstance(parsed_result, dict) else 0
+
+#                     if step_number is not None:
+#                         step_registry = dict(state.get("step_registry", {}))
+#                         prev = dict(step_registry.get(step_number, {}))
+#                         prev.update({
+#                             "step": step_number,
+#                             "action": action,
+#                             "executed": exec_ok,
+#                             "rows_returned": rows_returned,
+#                             "status": "ok" if exec_ok else "error",
+#                         })
+#                         step_registry[step_number] = prev
+#                         state["step_registry"] = step_registry
+
+#                     state["last_executed_result"] = parsed_result
+#                     state["last_execute_error"] = None if exec_ok else json.dumps(parsed_result, ensure_ascii=False)
+
+#                     if exec_ok:
+#                         iter_any_exec_ok = True
+#                         state["last_failed_step"] = None
+#                     else:
+#                         iter_had_error = True
+#                         state["last_failed_step"] = step_number
+#                         if not (isinstance(parsed_result, dict) and str(parsed_result.get("error", "")).endswith("blocked.")):
+#                             _increment_step_retry(state, step_number)
+#                             state["step_retry_count"] = state.get("step_retry_count", 0) + 1
+#                             state["total_step_retries"] = state.get("total_step_retries", 0) + 1
+#                         _append_error(json.dumps(parsed_result, ensure_ascii=False))
+
+#             else:
+#                 result = await tool.ainvoke(args)
+#                 parsed = _parse_tool_result(result)
+
+#                 if name == "tool_get_database_catalog":
+#                     dbs, tables = _extract_from_database_catalog(parsed)
+#                     state["discovered_databases"] = _dedup(list(state.get("discovered_databases", [])) + dbs)
+#                     state["discovered_tables"] = _dedup(list(state.get("discovered_tables", [])) + tables)
+
+#                 elif name == "tool_get_available_databases":
+#                     dbs = _extract_databases_from_result(parsed)
+#                     state["discovered_databases"] = _dedup(list(state.get("discovered_databases", [])) + dbs)
+
+#                 elif name == "tool_get_available_tables":
+#                     tables = _extract_tables_from_available_tables_result(parsed)
+#                     state["discovered_tables"] = _dedup(list(state.get("discovered_tables", [])) + tables)
+
+#                 elif name == "tool_get_table_schema":
+#                     table = args.get("table_name")
+#                     if table:
+#                         state["discovered_tables"] = _dedup(list(state.get("discovered_tables", [])) + [table])
+
+#                 elif name == "tool_validate_sql":
+#                     sql = (args.get("sql") or "").strip()
+#                     step_number = args.get("step_number")
+#                     database = (args.get("databaseName") or "").strip()
+
+#                     parsed_result = _parse_tool_result(result)
+#                     ok = isinstance(parsed_result, dict) and parsed_result.get("validated") is True
+
+#                     state["last_sql"] = sql
+#                     state["last_validation_ok"] = ok
+#                     state["last_validation_error"] = None if ok else json.dumps(parsed_result, ensure_ascii=False)
+
+#                     if step_number is not None:
+#                         step_registry = dict(state.get("step_registry", {}))
+#                         prev = dict(step_registry.get(step_number, {}))
+#                         prev.update({
+#                             "step": step_number,
+#                             "action": "query",
+#                             "sql": sql,
+#                             "database": database,
+#                             "validated": ok,
+#                             "executed": prev.get("executed", False),
+#                             "rows_returned": prev.get("rows_returned", 0),
+#                             "status": prev.get("status", "pending"),
+#                         })
+#                         step_registry[step_number] = prev
+#                         state["step_registry"] = step_registry
+
+#                     if ok:
+#                         state["last_validated_sql"] = sql
+#                         validated_sqls = dict(state.get("validated_sqls", {}))
+#                         validated_sqls[step_number] = {"sql": sql, "database": database}
+#                         state["validated_sqls"] = validated_sqls
+#                     else:
+#                         iter_had_validation_error = True
+#                         iter_had_error = True
+#                         state["last_failed_step"] = step_number
+#                         state["last_validated_sql"] = None
+#                         _increment_step_retry(state, step_number)
+#                         state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
+#                         state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
+#                         _append_error(json.dumps(parsed_result, ensure_ascii=False))
+
+#             log_item = {
+#                 "tool": name,
+#                 "raw_args": raw_args,
+#                 "args": args,
+#                 "result": str(result),
+#             }
+#             iteration_tools.append(log_item)
+#             tool_call_id = tc.get("id") or f"fallback_{i}"
+#             msgs.append(ToolMessage(content=str(result), tool_call_id=tool_call_id))
+
+#         except Exception as e:
+#             err = f"Error: {e}"
+#             iter_had_error = True
+#             _append_error(err)
+#             iteration_tools.append({"tool": name, "raw_args": raw_args, "args": args, "result": err})
+#             tool_call_id = tc.get("id") or f"fallback_{i}"
+#             msgs.append(ToolMessage(content=err, tool_call_id=tool_call_id))
+
+#     state["iter_had_error"] = iter_had_error
+#     state["iter_had_validation_error"] = iter_had_validation_error
+#     state["iter_any_exec_ok"] = iter_any_exec_ok
+
+#     if iter_any_exec_ok or iter_had_error:
+#         state["last_execute_ok"] = iter_any_exec_ok and not iter_had_error
+
+#     run_log = list(state.get("current_run_log", []))
+#     if run_log:
+#         run_log[-1]["tools"] = iteration_tools
+
+#     state["msgs"] = msgs
+#     state["current_run_log"] = run_log
+#     state["crash_snapshot"] = _build_snapshot(state)
+#     return state
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+_tools_node — refactored into small, testable helper functions.
+
+Public entry point:  _tools_node(state) -> AgentState
+Helper functions (in call order):
+  _normalize_tool_args          — recover flat-arg mistakes, inject run_id
+  _guard_step_tool              — validate pre-conditions, return blocked JSON or None
+  _execute_tool                 — call tool.ainvoke or return blocked result
+  _update_step_registry         — write step metadata to state
+  _update_iteration_flags       — set iter_* accumulators and error counters
+  _handle_discovery_or_validation_tool — process non-execute tools (catalog, validate, etc.)
+  _build_tool_message_and_log   — append ToolMessage to msgs and log_item to iteration log
+"""
+
+from typing import Any
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+STEP_TOOLS: frozenset[str] = frozenset({
+    "tool_execute_query_step",
+    "tool_execute_filter_step",
+    "tool_execute_select_columns_step",
+    "tool_execute_spatial_join_step",
+    "tool_execute_attribute_join_step",
+    "tool_execute_buffer_step",
+    "tool_execute_nearest_step",
+    "tool_execute_distance_step",
+    "tool_execute_aggregate_step",
+    "tool_execute_sort_step",
+    "tool_execute_limit_step",
+    "tool_execute_clip_step",
+    "tool_execute_union_step",
+    "tool_execute_intersection_step",
+    "tool_execute_difference_step",
+    "tool_execute_dissolve_step",
+    "tool_execute_centroid_step",
+    "tool_execute_transform_crs_step",
+})
+
+# Fields that belong inside the nested step dict.
+# Used to detect and recover flat-arg mistakes from the model.
+STEP_DICT_FIELDS: frozenset[str] = frozenset({
+    "step", "action", "database", "sql", "validSql",
+    "source_step", "left_source", "right_source",
+    "join_type", "left_geom", "right_geom",
+    "distance_meters", "buffer_distance",
+    "filters", "select_columns", "output_columns",
+    "group_by", "aggregation_type", "metric_column", "metric_as",
+    "order_by", "order_direction", "limit",
+    "target_crs", "join_keys",
+})
+
+# Actions that require source_step
+SOURCE_STEP_ACTIONS: frozenset[str] = frozenset({
+    "filter", "select_columns", "sort", "limit",
+    "buffer", "centroid", "transform_crs", "dissolve", "union", "aggregate",
+})
+
+# Actions that require left_source + right_source
+DUAL_SOURCE_ACTIONS: frozenset[str] = frozenset({
+    "spatial_join", "intersection", "difference",
+    "clip", "nearest", "distance", "attribute_join",
+})
+
+
+
+def _validated_sql_key(run_id: str | None, step_number: int | None) -> str | None:
+    if not run_id or step_number is None:
+        return None
+    return f"{run_id}:{step_number}"
+
+
+def _coerce_args(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return {}
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Normalize tool args
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalize_tool_args(name: str, raw_args: dict, run_id: str) -> dict:
+    """
+    Inject run_id and recover flat-arg mistakes:
+    if the model sent step fields at the top level instead of nested under 'step',
+    reconstruct the correct shape automatically.
+    """
+    args = dict(raw_args or {})
+
+    if name not in STEP_TOOLS:
+        return args
+
+    args["run_id"] = run_id
+
+    step_obj = args.get("step")
+    if isinstance(step_obj, dict):
+        return args  # already correct
+
+    # Reconstruct nested step dict from flat fields
+    normalized_step: dict = {}
+
+    if step_obj is not None:
+        normalized_step["step"] = step_obj  # preserve scalar step number
+
+    for key in list(args.keys()):
+        if key in STEP_DICT_FIELDS and key != "step":
+            normalized_step[key] = args.pop(key)
+
+    if normalized_step:
+        args["step"] = normalized_step
+        logger.debug(
+            "      [normalize] flat args reconstructed into step dict: %s",
+            json.dumps(normalized_step, default=str)[:200],
+        )
+
+    return args
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Guard step tool
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _guard_step_tool(
+    name: str,
+    raw_args: dict,
+    args: dict,
+    validated_sqls: dict,
+) -> tuple[str | None, dict | None]:
+    action_name = name.replace("tool_execute_", "").replace("_step", "")
+    step_obj = args.get("step")
+    run_id = args.get("run_id")
+
+    def _flat_hint() -> str:
+        flat_keys = STEP_DICT_FIELDS - {"step"}
+        if any(k in raw_args for k in flat_keys):
+            nested = {k: v for k, v in raw_args.items() if k != "run_id"}
+            return (
+                "You sent step fields as flat top-level arguments — "
+                "they must be nested inside a single 'step' dict. "
+                f"You sent: {json.dumps(raw_args, default=str)[:300]}. "
+                f"Correct shape: {name}(run_id='<run_id>', "
+                f"step={json.dumps(nested, default=str)[:200]})"
+            )
+        return (
+            f"The 'step' argument must be a dict, not "
+            f"{type(step_obj).__name__} = {repr(step_obj)[:100]}. "
+            f"Correct shape: {name}(run_id='<run_id>', "
+            f"step={{'step': <int>, 'action': '{action_name}', ...}})"
+        )
+
+    if not isinstance(step_obj, dict):
+        return json.dumps({
+            "executed": False,
+            "error": f"{name} blocked.",
+            "reason": _flat_hint(),
+            "step": None,
+            "action": action_name,
+        }), None
+
+    step_obj = dict(step_obj)
+    step_number = step_obj.get("step")
+    action = step_obj.get("action") or action_name
+    sql = (step_obj.get("sql") or "").strip()
+    database = (step_obj.get("database") or "").strip()
+    blocked_reason: str | None = None
+
+    def _norm(s: str) -> str:
+        return " ".join((s or "").split())
+
+    if name == "tool_execute_query_step":
+        valid_sql_flag = step_obj.get("validSql")
+        validated_entry = validated_sqls.get(_validated_sql_key(run_id, step_number))
+
+        if action != "query":
+            blocked_reason = "step.action must be 'query'."
+        elif valid_sql_flag != "ok":
+            blocked_reason = "step.validSql must be 'ok'."
+        elif step_number is None:
+            blocked_reason = "step.step is required."
+        elif not database:
+            blocked_reason = "step.database is required."
+        elif not sql:
+            blocked_reason = "step.sql is required."
+        elif validated_entry is None:
+            blocked_reason = (
+                f"No validated SQL found for step {step_number}. "
+                "Call tool_validate_sql first with this step_number, "
+                "then call tool_execute_query_step with the identical SQL."
+            )
+        elif _norm(validated_entry.get("sql", "")) != _norm(sql):
+            blocked_reason = (
+                "SQL does not match the validated entry — execute the exact same SQL. "
+                f"Validated SQL starts with: {validated_entry.get('sql', '')[:120]!r}"
+            )
+        elif validated_entry.get("database", "") != database:
+            blocked_reason = (
+                f"Database mismatch: validated for '{validated_entry.get('database')}' "
+                f"but received '{database}'."
+            )
+
+    else:
+        if step_number is None:
+            blocked_reason = "step.step is required."
+        elif action == "aggregate":
+            if step_obj.get("source_step") is None:
+                blocked_reason = "aggregate requires source_step."
+            elif not step_obj.get("group_by") and not step_obj.get("aggregation_type"):
+                blocked_reason = "aggregate requires group_by or aggregation_type."
+        elif action in SOURCE_STEP_ACTIONS and step_obj.get("source_step") is None:
+            blocked_reason = f"{action} requires source_step."
+        elif action in DUAL_SOURCE_ACTIONS:
+            if step_obj.get("left_source") is None or step_obj.get("right_source") is None:
+                blocked_reason = f"{action} requires left_source and right_source."
+
+    if blocked_reason:
+        return json.dumps({
+            "executed": False,
+            "error": f"{name} blocked.",
+            "reason": blocked_reason,
+            "step": step_number,
+            "action": action,
+        }), None
+
+    return None, step_obj
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Execute tool
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _execute_tool(
+    tool: Any,
+    name: str,
+    args: dict,
+    blocked_json: str | None,
+) -> tuple[str, Any, bool, int]:
+    """
+    Either return the pre-built blocked result or invoke the tool.
+
+    Returns:
+        (result_str, parsed_result, exec_ok, rows_returned)
+    """
+    if blocked_json is not None:
+        parsed = _parse_tool_result(blocked_json)
+        return blocked_json, parsed, False, 0
+
+    result_str = await tool.ainvoke(args)
+    parsed = _parse_tool_result(result_str)
+    exec_ok = isinstance(parsed, dict) and parsed.get("executed", False)
+    rows_returned = parsed.get("rows_returned", 0) if isinstance(parsed, dict) else 0
+    return result_str, parsed, exec_ok, rows_returned
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Update step registry
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _update_step_registry(
+    state: "AgentState",
+    name: str,
+    step_obj: dict | None,
+    exec_ok: bool,
+    rows_returned: int,
+) -> None:
+    """Write step execution metadata into state['step_registry']."""
+    if step_obj is None:
+        return
+
+    step_number = step_obj.get("step")
+    if step_number is None:
+        return
+
+    action = step_obj.get("action") or name.replace("tool_execute_", "").replace("_step", "")
+    is_query = name == "tool_execute_query_step"
+
+    step_registry = dict(state.get("step_registry", {}))
+    prev = dict(step_registry.get(step_number, {}))
+    prev.update({
+        "step": step_number,
+        "action": action,
+        "sql": (step_obj.get("sql") or "").strip() if is_query else prev.get("sql", ""),
+        "database": (step_obj.get("database") or "").strip() if is_query else prev.get("database", ""),
+        "validated": prev.get("validated", False),
+        "executed": exec_ok,
+        "rows_returned": rows_returned,
+        "status": "ok" if exec_ok else "error",
+    })
+    step_registry[step_number] = prev
+    state["step_registry"] = step_registry
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Update iteration flags
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _update_iteration_flags(
+    state: "AgentState",
+    name: str,
+    step_obj: dict | None,
+    parsed_result: Any,
+    exec_ok: bool,
+    iter_flags: dict,
+) -> None:
+    step_number = step_obj.get("step") if step_obj else None
+    run_id = state.get("run_id")
+
+    if exec_ok:
+        iter_flags["iter_any_exec_ok"] = True
+        state["last_failed_step"] = None
+
+        if name == "tool_execute_query_step":
+            validated_sqls = dict(state.get("validated_sqls", {}))
+            key = _validated_sql_key(run_id, step_number)
+            if key:
+                validated_sqls.pop(key, None)
+            state["validated_sqls"] = validated_sqls
+    else:
+        iter_flags["iter_had_error"] = True
+        state["last_failed_step"] = step_number
+        state["last_execute_error"] = json.dumps(parsed_result, ensure_ascii=False)
+
+        is_blocked = isinstance(parsed_result, dict) and str(
+            parsed_result.get("error", "")
+        ).endswith("blocked.")
+
+        if not is_blocked:
+            _increment_step_retry(state, step_number)
+            if name == "tool_execute_query_step":
+                state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
+                state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
+            else:
+                state["step_retry_count"] = state.get("step_retry_count", 0) + 1
+                state["total_step_retries"] = state.get("total_step_retries", 0) + 1
+
+        state["all_errors"] = _dedup(
+            list(state.get("all_errors", [])) + [json.dumps(parsed_result, ensure_ascii=False)]
+        )
+
+    state["last_executed_result"] = parsed_result
+    if exec_ok:
+        state["last_execute_error"] = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Handle discovery / validation tools
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _handle_validate_sql_tool(
+    state: "AgentState",
+    args: dict,
+    result: str,
+    iter_flags: dict,
+) -> None:
+    sql = (args.get("sql") or "").strip()
+    step_number = args.get("step_number")
+    database = (args.get("databaseName") or "").strip()
+    run_id = state.get("run_id")
+
+    parsed_result = _parse_tool_result(result)
+    ok = isinstance(parsed_result, dict) and parsed_result.get("validated") is True
+
+    state["last_sql"] = sql
+    state["last_validation_ok"] = ok
+    state["last_validation_error"] = None if ok else json.dumps(parsed_result, ensure_ascii=False)
+
+    if step_number is not None:
+        step_registry = dict(state.get("step_registry", {}))
+        prev = dict(step_registry.get(step_number, {}))
+        prev.update({
+            "step": step_number,
+            "action": "query",
+            "sql": sql,
+            "database": database,
+            "validated": ok,
+            "executed": prev.get("executed", False),
+            "rows_returned": prev.get("rows_returned", 0),
+            "status": prev.get("status", "pending"),
+        })
+        step_registry[step_number] = prev
+        state["step_registry"] = step_registry
+
+    if ok:
+        state["last_validated_sql"] = sql
+        validated_sqls = dict(state.get("validated_sqls", {}))
+        key = _validated_sql_key(run_id, step_number)
+        if key:
+            validated_sqls[key] = {"sql": sql, "database": database}
+        state["validated_sqls"] = validated_sqls
+    else:
+        iter_flags["iter_had_validation_error"] = True
+        iter_flags["iter_had_error"] = True
+        state["last_failed_step"] = step_number
+        state["last_validated_sql"] = None
+        _increment_step_retry(state, step_number)
+        state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
+        state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
+        state["all_errors"] = _dedup(
+            list(state.get("all_errors", [])) + [json.dumps(parsed_result, ensure_ascii=False)]
+        )
+
+
+
+
+
+def _handle_discovery_tool(
+    state: "AgentState",
+    name: str,
+    args: dict,
+    result: str,
+) -> None:
+    parsed = _parse_tool_result(result)
+
+    if name == "tool_get_database_catalog":
+        dbs, tables = _extract_from_database_catalog(parsed)
+        state["discovered_databases"] = _dedup(list(state.get("discovered_databases", [])) + dbs)
+        state["discovered_tables"] = _dedup(list(state.get("discovered_tables", [])) + tables)
+
+    elif name == "tool_get_available_databases":
+        dbs = _extract_databases_from_result(parsed)
+        state["discovered_databases"] = _dedup(list(state.get("discovered_databases", [])) + dbs)
+
+    elif name == "tool_get_available_tables":
+        tables = _extract_tables_from_available_tables_result(parsed)
+        state["discovered_tables"] = _dedup(list(state.get("discovered_tables", [])) + tables)
+
+    elif name == "tool_get_table_schema":
+        table = args.get("table_name")
+        if table:
+            state["discovered_tables"] = _dedup(list(state.get("discovered_tables", [])) + [table])
+
+
+
+
+
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Build tool message and log item
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_tool_message_and_log(
+    tc: dict,
+    i: int,
+    name: str,
+    raw_args: dict,
+    args: dict,
+    result: Any,
+    msgs: list,
+    iteration_tools: list,
+) -> None:
+    content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+
+    iteration_tools.append({
+        "tool": name,
+        "raw_args": raw_args,
+        "args": args,
+        "result": content,
+    })
+
+    tool_call_id = tc.get("id") or f"fallback_{i}"
+    msgs.append(ToolMessage(content=content, tool_call_id=tool_call_id))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main orchestrator
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+
 async def _tools_node(state: AgentState) -> AgentState:
     tools = _get_tools()
     tool_map = {t.name: t for t in tools}
 
-    step_tools = {
-        "tool_execute_query_step",
-        "tool_execute_filter_step",
-        "tool_execute_select_columns_step",
-        "tool_execute_spatial_join_step",
-        "tool_execute_attribute_join_step",
-        "tool_execute_buffer_step",
-        "tool_execute_nearest_step",
-        "tool_execute_distance_step",
-        "tool_execute_aggregate_step",
-        "tool_execute_sort_step",
-        "tool_execute_limit_step",
-        "tool_execute_clip_step",
-        "tool_execute_union_step",
-        "tool_execute_intersection_step",
-        "tool_execute_difference_step",
-        "tool_execute_dissolve_step",
-        "tool_execute_centroid_step",
-        "tool_execute_transform_crs_step",
-    }
-
     ai = state["current_ai"]
     msgs = list(state["msgs"])
-    iteration_tools = []
+    iteration_tools: list[dict] = []
 
-    logger.debug(
-        "\n"
-        + "  TOOL EXECUTION\n"
-        + "  " + "." * 86 + "\n"
-        + "    iteration        : %s\n"
-        + "    declared_calls   : %s\n"
-        + "  " + "." * 86,
-        state["iterations"],
-        len(ai.tool_calls),
-    )
-
-    def _norm(s: str) -> str:
-        return " ".join(s.split())
+    iter_flags: dict = {
+        "iter_had_error": False,
+        "iter_had_validation_error": False,
+        "iter_any_exec_ok": False,
+    }
 
     for i, tc in enumerate(ai.tool_calls, start=1):
         name = tc["name"]
-        args = dict(tc.get("args") or {})
-        tool = tool_map[name]
+        raw_args = _coerce_args(tc.get("args"))
+        args = _normalize_tool_args(name, raw_args, state["run_id"])
+        tool = tool_map.get(name)
         state["total_tool_calls"] = state.get("total_tool_calls", 0) + 1
 
-        logger.debug(
-            "\n"
-            + "    Tool call %s/%s\n"
-            + "      name           : %s\n"
-            + "      args           : %s",
-            i, len(ai.tool_calls), name, args,
-        )
+        if tool is None:
+            err = f"Unknown tool: {name}"
+            iter_flags["iter_had_error"] = True
+            state["all_errors"] = _dedup(list(state.get("all_errors", [])) + [err])
+            _build_tool_message_and_log(tc, i, name, raw_args, args, err, msgs, iteration_tools)
+            continue
+
+        result_str = ""
 
         try:
-            if name in step_tools:
+            if name in STEP_TOOLS:
+                validated_sqls = state.get("validated_sqls", {})
+                blocked_json, step_obj = _guard_step_tool(name, raw_args, args, validated_sqls)
 
-                if name == "tool_execute_query_step":
-                    run_id_val = args.get("run_id", "")
+                result_str, parsed_result, exec_ok, rows_returned = await _execute_tool(
+                    tool, name, args, blocked_json
+                )
 
-                    if isinstance(run_id_val, dict):
-                        recovered = run_id_val
-                        if "action" in recovered or "sql" in recovered or "step" in recovered:
-                            logger.warning("      auto-fix E: run_id is dict → moved to step field")
-                            args["step"] = recovered
+                _update_step_registry(state, name, step_obj, exec_ok, rows_returned)
+                _update_iteration_flags(state, name, step_obj, parsed_result, exec_ok, iter_flags)
 
-                    elif isinstance(run_id_val, str) and run_id_val.strip().startswith("{"):
-                        try:
-                            recovered_step = json.loads(run_id_val)
-                            if "action" in recovered_step or "sql" in recovered_step:
-                                logger.warning("      auto-fix A: step object in run_id → moved to step field")
-                                args["step"] = recovered_step
-                        except json.JSONDecodeError:
-                            pass
-
-                    elif "action" in args and "sql" in args and not isinstance(args.get("step"), dict):
-                        logger.warning("      auto-fix B: flattened step object → wrapping into step field")
-                        args["step"] = {
-                            "step": args.pop("step", None),
-                            "action": args.pop("action", None),
-                            "database": args.pop("database", None),
-                            "sql": args.pop("sql", None),
-                            "validSql": args.pop("validSql", None),
-                        }
-
-                    args["run_id"] = state["run_id"]
-
-                    step_obj = dict(args.get("step") or {})
-                    sql = (step_obj.get("sql") or "").strip()
-                    step_number = step_obj.get("step")
-                    database = (step_obj.get("database") or "").strip()
-
-                    if sql:
-                        state["last_sql"] = sql
-
-                    validated_sqls = dict(state.get("validated_sqls", {}))
-                    validated_entry = validated_sqls.get(step_number)
-
-                    blocked = (
-                        validated_entry is None
-                        or _norm(validated_entry.get("sql", "")) != _norm(sql)
-                        or validated_entry.get("database", "") != database
-                    )
-
-                    if blocked:
-                        logger.warning("      guard: blocked step=%s", step_number)
-                        result = json.dumps({
-                            "error": "tool_execute_query_step blocked.",
-                            "reason": "SQL or database does not match validated entry.",
-                            "expected": validated_entry,
-                            "received": {"step": step_number, "sql": sql, "database": database},
-                            "run_id": state["run_id"],
-                        }, default=str)
-                        exec_parsed = _parse_tool_result(result)
-                        exec_ok = False
-                        rows_returned = 0
-                    else:
-                        validated_sqls.pop(step_number, None)
-                        state["validated_sqls"] = validated_sqls
-                        result = await tool.ainvoke(args)
-
-                        exec_parsed = _parse_tool_result(result)
-                        exec_ok = isinstance(exec_parsed, dict) and exec_parsed.get("executed", False)
-                        rows_returned = exec_parsed.get("rows_returned", 0) if isinstance(exec_parsed, dict) else 0
-
-                    if step_number is not None:
-                        step_registry = dict(state.get("step_registry", {}))
-                        prev = dict(step_registry.get(step_number, {}))
-                        prev.update({
-                            "step": step_number,
-                            "action": "query",
-                            "sql": sql,
-                            "database": database,
-                            "validated": prev.get("validated", False),
-                            "executed": exec_ok,
-                            "rows_returned": rows_returned,
-                            "status": "ok" if exec_ok else "error",
-                        })
-                        step_registry[step_number] = prev
-                        state["step_registry"] = step_registry
-
-                    logger.debug("      result         : %s", _short(str(result), 3000))
-
-                    state["last_executed_result"] = exec_parsed
-                    state["last_execute_ok"] = exec_ok
-                    state["last_execute_error"] = None if exec_ok else str(result)
-
-                    if not exec_ok:
-                        is_blocked = '"error": "tool_execute_query_step blocked."' in str(result)
-                        if not is_blocked:
-                            state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
-                            state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
-                        state["all_errors"] = _dedup(
-                            list(state.get("all_errors", [])) + [str(result)]
-                        )
-                    else:
-                        state["last_validation_error"] = None
-
-
-
-
-
-
-                 
-                else:
-                    run_id_val = args.get("run_id", "")
-
-                    if isinstance(run_id_val, dict):
-                        recovered = run_id_val
-                        if "action" in recovered or "sql" in recovered or "step" in recovered:
-                            logger.warning("      auto-fix E: run_id is dict → moved to step field (tool=%s)", name)
-                            args["step"] = recovered
-
-                    elif isinstance(run_id_val, str) and run_id_val.strip().startswith("{"):
-                        try:
-                            recovered_step = json.loads(run_id_val)
-                            if "action" in recovered_step or "step" in recovered_step:
-                                logger.warning("      auto-fix C: step object in run_id → moved to step field (tool=%s)", name)
-                                args["step"] = recovered_step
-                        except json.JSONDecodeError:
-                            pass
-
-                    elif "action" in args and not isinstance(args.get("step"), dict):
-                        logger.warning("      auto-fix D: flattened step object → wrapping into step field (tool=%s)", name)
-                        args["step"] = {
-                            k: args.pop(k)
-                            for k in [
-                                "step", "action", "left_source", "right_source", "source_step",
-                                "join_type", "left_geom", "right_geom", "distance_meters",
-                                "group_by", "aggregation_type", "metric_column", "metric_as",
-                                "order_by", "order_direction", "limit", "buffer_distance",
-                                "target_crs", "join_keys", "select_columns", "filters", "output_columns",
-                            ]
-                            if k in args
-                        }
-
-                    args["run_id"] = state["run_id"]
-
-                    step_obj = dict(args.get("step") or {})
-                    step_number = step_obj.get("step")
-                    action = step_obj.get("action")
-
-                    result = await tool.ainvoke(args)
-                    parsed_result = _parse_tool_result(result)
-                    exec_ok = isinstance(parsed_result, dict) and parsed_result.get("executed", False)
-                    rows_returned = parsed_result.get("rows_returned", 0) if isinstance(parsed_result, dict) else 0
-
-                    if step_number is not None:
-                        step_registry = dict(state.get("step_registry", {}))
-                        prev = dict(step_registry.get(step_number, {}))
-                        prev.update({
-                            "step": step_number,
-                            "action": action,
-                            "executed": exec_ok,
-                            "rows_returned": rows_returned,
-                            "status": "ok" if exec_ok else "error",
-                        })
-                        step_registry[step_number] = prev
-                        state["step_registry"] = step_registry
-
-                    logger.debug("      result         : %s", _short(str(result), 3000))
-
-                    state["last_executed_result"] = parsed_result
-                    state["last_execute_ok"] = exec_ok
-                    state["last_execute_error"] = None if exec_ok else str(result)
-
-                    if not exec_ok:
-                        state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
-                        state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
-                        state["all_errors"] = _dedup(
-                            list(state.get("all_errors", [])) + [str(result)]
-                        )
-                    else:
-                        state["last_validation_error"] = None
-
-
-
-
+            elif name == "tool_validate_sql":
+                result_str = await tool.ainvoke(args)
+                _handle_validate_sql_tool(state, args, result_str, iter_flags)
 
             else:
-                result = await tool.ainvoke(args)
-                logger.debug("      result         : %s", _short(str(result), 300))
-                parsed = _parse_tool_result(result)
+                result_str = await tool.ainvoke(args)
+                _handle_discovery_tool(state, name, args, result_str)
 
-                if name == "tool_get_database_catalog":
-                    dbs, tables = _extract_from_database_catalog(parsed)
-                    state["discovered_databases"] = _dedup(
-                        list(state.get("discovered_databases", [])) + dbs
-                    )
-                    state["discovered_tables"] = _dedup(
-                        list(state.get("discovered_tables", [])) + tables
-                    )
-
-            
-                elif  name == "tool_get_available_databases":
-                    dbs = _extract_databases_from_result(parsed)
-                    state["discovered_databases"] = _dedup(
-                        list(state.get("discovered_databases", [])) + dbs
-                    )
-
-                elif name == "tool_get_available_tables":
-                    tables = _extract_tables_from_available_tables_result(parsed)
-                    state["discovered_tables"] = _dedup(
-                        list(state.get("discovered_tables", [])) + tables
-                    )
-
-                elif name == "tool_get_table_schema":
-                    table = args.get("table_name")
-                    if table:
-                        state["discovered_tables"] = _dedup(
-                            list(state.get("discovered_tables", [])) + [table]
-                        )
-
-                elif name == "tool_validate_sql":
-                    sql = (args.get("sql") or "").strip()
-                    step_number = args.get("step_number")
-                    database = (args.get("databaseName") or "").strip()
-
-                    parsed_result = _parse_tool_result(result)
-                    ok = (
-                        (isinstance(parsed_result, dict) and parsed_result.get("validated") is True)
-                        or str(result).strip().lower() == "ok"
-                    )
-
-                    if ok and step_number is None:
-                        result = "Error: step_number=<integer> is required in tool_validate_sql. Retry with step_number."
-                        ok = False
-
-                    state["last_sql"] = sql
-                    state["last_validation_ok"] = ok
-                    state["last_validation_error"] = None if ok else str(result)
-
-                    if step_number is not None:
-                        step_registry = dict(state.get("step_registry", {}))
-                        prev = dict(step_registry.get(step_number, {}))
-                        prev.update({
-                            "step": step_number,
-                            "action": prev.get("action", "query"),
-                            "sql": sql,
-                            "database": database,
-                            "validated": ok,
-                            "executed": prev.get("executed", False),
-                            "rows_returned": prev.get("rows_returned", 0),
-                            "status": prev.get("status", "pending"),
-                        })
-                        step_registry[step_number] = prev
-                        state["step_registry"] = step_registry
-
-                    if ok:
-                        state["last_validated_sql"] = sql
-                        validated_sqls = dict(state.get("validated_sqls", {}))
-                        validated_sqls[step_number] = {"sql": sql, "database": database}
-                        state["validated_sqls"] = validated_sqls
-
-                        result = json.dumps({
-                            "validated": True,
-                            "step_number": step_number,
-                            "database": database,
-                            "next_action": (
-                                f"call tool_execute_query_step with step.step={step_number}, "
-                                f"step.action='query', step.database='{database}', "
-                                "step.sql=<identical sql>, step.validSql='ok'"
-                            ),
-                        }, default=str)
-                    else:
-                        state["last_validated_sql"] = None
-                        state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
-                        state["total_sql_repairs"] = state.get("total_sql_repairs", 0) + 1
-                        state["all_errors"] = _dedup(
-                            list(state.get("all_errors", [])) + [str(result)]
-                        )
-
-            log_item = {"tool": name, "args": args, "result": str(result)}
-            if name == "tool_get_available_tables":
-                parsed_tables = _extract_tables_from_available_tables_result(
-                    _parse_tool_result(result)
-                )
-                if parsed_tables:
-                    log_item["result_tables"] = parsed_tables
-
-            iteration_tools.append(log_item)
-            msgs.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+            _build_tool_message_and_log(
+                tc, i, name, raw_args, args, result_str, msgs, iteration_tools
+            )
 
         except Exception as e:
             err = f"Error: {e}"
-            logger.debug("      result         : %s", _short(err, 300))
+            iter_flags["iter_had_error"] = True
             state["all_errors"] = _dedup(list(state.get("all_errors", [])) + [err])
-            iteration_tools.append({"tool": name, "args": args, "result": err})
-            msgs.append(ToolMessage(content=err, tool_call_id=tc["id"]))
+            _build_tool_message_and_log(tc, i, name, raw_args, args, err, msgs, iteration_tools)
+
+    state["iter_had_error"] = iter_flags["iter_had_error"]
+    state["iter_had_validation_error"] = iter_flags["iter_had_validation_error"]
+    state["iter_any_exec_ok"] = iter_flags["iter_any_exec_ok"]
+    state["last_execute_ok"] = iter_flags["iter_any_exec_ok"]
 
     run_log = list(state.get("current_run_log", []))
     if run_log:
         run_log[-1]["tools"] = iteration_tools
-    else:
-        run_log.append({
-            "iteration": state["iterations"],
-            "tokens": dict(state.get("current_iter_tokens", {})),
-            "ai_content": "",
-            "tool_calls": [
-                {"name": tc.get("name"), "args": tc.get("args"), "type": tc.get("type")}
-                for tc in (ai.tool_calls or [])
-            ],
-            "tools": iteration_tools,
-        })
 
     state["msgs"] = msgs
     state["current_run_log"] = run_log
     state["crash_snapshot"] = _build_snapshot(state)
     return state
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -1386,17 +1966,12 @@ Do not guess final results.
     state["current_ai_is_final_answer"] = False
     state["crash_snapshot"] = _build_snapshot(state)
     return state
-
-
 def _restart_or_finish_node(state: AgentState) -> AgentState:
-    if state.get("last_execute_ok"):
-        # Do NOT flush here — _finalize_node handles it.
-        state["done"] = True
-        state["crash_snapshot"] = _build_snapshot(state)
-        return state
+    steps = dict(state.get("step_registry", {}))
+    all_steps = list(steps.values())
+    any_executed = any(s.get("executed", False) for s in all_steps)
 
     if state.get("restart_count", 0) >= state.get("max_restarts", 0):
-        # Do NOT flush here — _finalize_node handles it.
         state["done"] = True
         state["crash_snapshot"] = _build_snapshot(state)
         return state
@@ -1418,30 +1993,38 @@ def _restart_or_finish_node(state: AgentState) -> AgentState:
         ],
         "iterations": 0,
         "sql_repair_count": 0,
+        "step_retry_count": 0,
+        "step_retry_counts": {},
+        "last_failed_step": None,
         "current_run_log": [],
         "attempt_tokens": _empty_token_dict(),
+        "last_sql": None if not any_executed else state.get("last_sql"),
         "last_validated_sql": None,
         "last_validation_ok": False,
         "last_validation_error": None,
         "last_execute_ok": False,
         "last_execute_error": None,
-        "last_executed_result": None,
+        "last_executed_result": state.get("last_executed_result") if any_executed else None,
         "valid_sql": False,
         "current_ai_is_final_answer": False,
         "done": False,
+        "task_completed": False,
+        "answer_based_on_result": False,
         "validated_sqls": {},
         "step_registry": {},
+        "iter_had_error": False,
+        "iter_had_validation_error": False,
+        "iter_any_exec_ok": False,
+        "plan_locked": False,
+        "locked_step_ids": set(),
     }
 
-
-    
     new_state["crash_snapshot"] = _build_snapshot(new_state)
     return new_state
-
-
 # ─────────────────────────────────────────────────────────────
 # finalize
 # ─────────────────────────────────────────────────────────────
+
 def _finalize_node(state: AgentState) -> AgentState:
     current_answer = ""
     ai = state.get("current_ai")
@@ -1458,16 +2041,20 @@ def _finalize_node(state: AgentState) -> AgentState:
 
     steps = dict(state.get("step_registry", {}))
     query_steps = [s for s in steps.values() if s.get("action") == "query"]
+    all_steps = list(steps.values())
+
+    any_executed = any(s.get("executed", False) for s in all_steps)
 
     if query_steps:
         all_validated = all(s.get("validated", False) for s in query_steps)
-        all_executed = all(s.get("executed", False) for s in steps.values())
+        all_executed = all(s.get("executed", False) for s in all_steps)
+        last_step = max(all_steps, key=lambda s: s.get("step", 0), default=None)
+        has_result = bool(last_step and last_step.get("executed", False))
     else:
-        # fallback for single_db without populated step_registry
         all_validated = state.get("last_validation_ok", False)
-        all_executed = state.get("last_execute_ok", False)
+        all_executed = any_executed or state.get("last_execute_ok", False)
+        has_result = state.get("last_executed_result") is not None
 
-    has_result = state.get("last_executed_result") is not None
     has_answer = bool(current_answer)
 
     if not all_executed:
@@ -1484,54 +2071,81 @@ def _finalize_node(state: AgentState) -> AgentState:
     state["done"] = True
     state["crash_snapshot"] = _build_snapshot(state)
     return state
+
+
+
+
+ 
 # ─────────────────────────────────────────────────────────────
 # Routing
 # ─────────────────────────────────────────────────────────────
 
+# def _route_after_model(state: AgentState) -> str:
+#     ai = state["current_ai"]
+
+#     # If the model already gave the final text answer
+#     if not ai.tool_calls:
+#         return "finalize" if state.get("last_execute_ok") else "restart_or_finish"
+
+#     # Only stop on max iterations if the model still wants to call tools
+#     if state["iterations"] >= state["max_iterations"]:
+#         return "restart_or_finish"
+
+#     return "tools"
+
+
 def _route_after_model(state: AgentState) -> str:
     ai = state["current_ai"]
 
-    # If the model already gave the final text answer
     if not ai.tool_calls:
-        return "finalize" if state.get("last_execute_ok") else "restart_or_finish"
+        return "finalize"
 
-    # Only stop on max iterations if the model still wants to call tools
     if state["iterations"] >= state["max_iterations"]:
         return "restart_or_finish"
 
     return "tools"
 
+# def _route_after_model(state: AgentState) -> str:
+#     ai = state["current_ai"]
+
+#     if ai.tool_calls:
+#         return "tools"
+
+#     if state["iterations"] >= state["max_iterations"]:
+#         return "restart_or_finish"
+
+#     return "finalize" if state.get("last_execute_ok") else "restart_or_finish"
+
 
 def _route_after_tools(state: AgentState) -> str:
-    if state.get("last_execute_ok", False):
-        ai = state.get("current_ai")
-        # Bare avslutt hvis modellen ga en tekstlig sluttrespons (ingen tool calls)
-        if ai and not ai.tool_calls:
-            return "finalize"
-        # Ellers fortsett — agenten har flere steg igjen
+    iter_had_error = state.get("iter_had_error", False)
+    iter_had_validation_error = state.get("iter_had_validation_error", False)
+    iter_any_exec_ok = state.get("iter_any_exec_ok", False)
+
+    if iter_any_exec_ok and not iter_had_error:
         return "model"
 
-
-
-    if state.get("last_validation_error"):
-        if state.get("sql_repair_count", 0) <= state.get("max_sql_repairs", 0):
+    if iter_had_validation_error:
+        failing_step = state.get("last_failed_step")
+        if failing_step is not None and _step_retry_ok(state, failing_step):
             return "sql_repair"
         return "restart_or_finish"
-    
-    
-    if state.get("last_execute_error"):
-        last_err = state.get("last_execute_error", "")
-        if '"error": "tool_execute_query_step blocked."' in last_err:
+
+    if iter_had_error:
+        parsed_err = _parse_tool_result(state.get("last_execute_error"))
+        if isinstance(parsed_err, dict):
+            if str(parsed_err.get("error", "")).endswith("blocked."):
+                return "model"
+
+        failing_step = state.get("last_failed_step")
+        if failing_step is not None and _step_retry_ok(state, failing_step):
             return "model"
-        if state.get("sql_repair_count", 0) <= state.get("max_sql_repairs", 0):
-            return "sql_repair"
         return "restart_or_finish"
-   
-   
+
     if state.get("iterations", 0) >= state.get("max_iterations", 0):
         return "restart_or_finish"
-    return "model"
 
+    return "model"
 
 def _route_after_restart_or_finish(state: AgentState) -> str:
     return "finalize" if state.get("done") else "model"
@@ -1561,6 +2175,7 @@ def _build_agent_graph():
     graph.add_node("finalize", _finalize_node)
 
     graph.set_entry_point("model")
+
 
     graph.add_conditional_edges(
         "model", _route_after_model,
@@ -1632,6 +2247,15 @@ async def agent(
         "validated_sqls": {},
         "query_mode": None,
         "step_registry": {},
+        "iter_had_error": False,
+        "iter_had_validation_error": False,
+        "iter_any_exec_ok": False,
+        "step_retry_count": 0,
+        "total_step_retries": 0,
+        "step_retry_counts": {},
+        "last_failed_step": None,
+        "plan_locked": False,
+        "locked_step_ids": set(),
     }
 
     state = init_state
@@ -1651,14 +2275,14 @@ async def agent(
 
     steps = dict(state.get("step_registry", {}))
     query_steps = [s for s in steps.values() if s.get("action") == "query"]
+    all_steps = list(steps.values())
+    executed = any(s.get("executed", False) for s in all_steps)
 
     if len(query_steps) == 1:
-        # single query step uansett antall steg totalt
         final_sql = query_steps[0].get("sql") or state.get("last_validated_sql") or state.get("last_sql")
-    elif not steps:
+    elif not query_steps:
         final_sql = state.get("last_validated_sql") or state.get("last_sql")
     else:
-        # flere query-steps — list alle
         final_sql = "\n\n-- STEP BOUNDARY --\n\n".join(
             s.get("sql", "") for s in sorted(query_steps, key=lambda x: x.get("step", 0))
             if s.get("sql")
@@ -1668,7 +2292,7 @@ async def agent(
         answer=state["answer"],
         sql=final_sql,
         result_data=state.get("last_executed_result"),
-        executed=state.get("last_execute_ok", False),
+        executed=executed,
         valid_sql=state.get("valid_sql", False),
         sql_repairs_used=state.get("total_sql_repairs", 0),
         restarts_used=state.get("restart_count", 0),
@@ -1681,6 +2305,13 @@ async def agent(
         total_api_calls=state.get("total_api_calls", 0),
     )
 
+
+
+
+
+
+
+
 async def pipeline(
     question: str,
     model_id: str,
@@ -1689,13 +2320,15 @@ async def pipeline(
     attempt_number: int = 0,
 ) -> PipelineResult:
     t0 = time.time()
+
     result = await agent(
-        question,
+        user_input=question,
         model_id=model_id,
         params=params,
         prompt=prompt,
         attempt_number=attempt_number,
     )
+
     return PipelineResult(
         model_id=model_id,
         final_answer=result.answer,
@@ -1715,6 +2348,11 @@ async def pipeline(
         answer_based_on_result=result.answer_based_on_result,
         total_api_calls=result.total_api_calls,
     )
+
+
+
+
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2316,6 +2954,7 @@ async def run_all(
     return results
 
 
+
 # ─────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────
@@ -2327,7 +2966,7 @@ async def main():
     logger.setLevel(logging.DEBUG)
 
     queries = [
-        " Find parcels that are located in agricultural land, overlap flood hazard zones, and also overlap soil- and flood-landslide hazard areas. Return the matching parcels together with their municipality.",
+        " Compare the number of buildings located in flood hazard zones, quick-clay hazard areas, and soil- and flood-landslide hazard areas for each municipality",
     ]
 
     model_ids = [
@@ -2340,7 +2979,7 @@ async def main():
         max_tokens=2000,
         timeout=120,
         max_retries=0,
-        max_iterations=18,
+        max_iterations=50,
         max_sql_repairs=3,
         max_restarts=2,
     )
