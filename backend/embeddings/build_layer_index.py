@@ -17,7 +17,7 @@ from backend.embeddings.retrieve_layers import retrieve_relevant_tables_with_emb
 
 
 
-from backend.tools.longChainTools import (
+from backend.tools.langchain_tools import (
     tool_get_available_databases,
     tool_get_available_schemas,
     tool_get_available_tables,

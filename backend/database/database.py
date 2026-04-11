@@ -12,21 +12,23 @@ class PoolManager:
         self._pools: dict[str, asyncpg.Pool] = {}
 
     async def connect(self, connection_string: str) -> str:
-        # create an id for each connection
         conn_id = str(uuid.uuid4())[:8]
         try:
-            # create a connection pool for db
+            logger.info("Creating pool for %s", connection_string)
+
             self._pools[conn_id] = await asyncpg.create_pool(
                 dsn=connection_string,
-                min_size=2,
-                max_size=10,
+                min_size=1,
+                max_size=3,
+                timeout=10,
                 command_timeout=120,
-                max_inactive_connection_lifetime=300,  # close idle connections before server does
+                max_inactive_connection_lifetime=300,
             )
-            logger.info(f"Pool created for conn_id={conn_id}")
+
+            logger.info("Pool created for conn_id=%s", conn_id)
             return conn_id
-        except Exception as e:
-            logger.error(f"Failed to create pool={conn_id}: {e}")
+        except Exception:
+            logger.exception("Failed to create pool=%s", conn_id)
             raise
 
     async def disconnect(self, conn_id: str) -> None:

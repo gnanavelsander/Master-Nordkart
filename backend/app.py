@@ -3,13 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from typing import Any
 from psycopg_pool import AsyncConnectionPool
-from Client.AzureChatOpenAI import run_all
+from evaluation.AzureChatOpenAI import run_all
 from firebase_admin import firestore
-from backend.firebase_admin_init import fs
 import os
 import json
 
-from backend.mcp_c_s.mcp_client import query_postgis
+from backend.mcp.client.client import query_postgis
 
 
 

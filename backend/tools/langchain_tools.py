@@ -1,5 +1,4 @@
 from langchain.tools import tool
-from pydantic import BaseModel
 from pathlib import Path
 import requests
 import json
@@ -8,13 +7,15 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from backend.mcp_c_s.mcp_client import (
+from backend.mcp.client.tools_discovery import (
     get_database_catalog,
     validate_sql_via_mcp,
     get_available_schemas,
     get_available_tables,
     get_table_schema,
     get_available_databases,
+)
+from backend.mcp.client.tools_steps import (
     execute_query_step,
     execute_filter_step,
     execute_select_columns_step,
@@ -46,14 +47,23 @@ def _err_json(step: int | None, action: str, msg: str) -> str:
     return _safe_json({"executed": False, "step": step, "action": action, "error": str(msg)})
 
 
-# --------------------------------------------------
-# Input schemas
-# --------------------------------------------------
+# # --------------------------------------------------
+# # Input schemas
+# # --------------------------------------------------
 
-class ValidateSqlInput(BaseModel):
-    sql: str
-    databaseName: str
-    step_number: int
+# class ValidateSqlInput(BaseModel):
+#     sql: str
+#     databaseName: str
+#     step_number: int
+
+
+
+
+
+
+
+
+
 
 
 # --------------------------------------------------
@@ -61,9 +71,9 @@ class ValidateSqlInput(BaseModel):
 # --------------------------------------------------
 
 @tool
-async def tool_get_available_databases() -> list[str]:
+async def tool_get_available_databases() -> str:
     """Get all available database names."""
-    return await get_available_databases()
+    return _safe_json(await get_available_databases())
 
 
 @tool
@@ -97,18 +107,24 @@ async def tool_get_database_catalog(
 # Validation tool
 # --------------------------------------------------
 
-@tool(args_schema=ValidateSqlInput)
+@tool
 async def tool_validate_sql(sql: str, databaseName: str, step_number: int) -> str:
-    """Validate SQL syntax using EXPLAIN. Returns JSON with validated=true/false."""
-    return await validate_sql_via_mcp(sql=sql, databaseName=databaseName, step_number=step_number)
-
-
+    """Validate SQL syntax using EXPLAIN through MCP and return JSON."""
+    return _safe_json(
+        await validate_sql_via_mcp(
+            sql=sql,
+            databaseName=databaseName,
+            step_number=step_number,
+        )
+    )
 # --------------------------------------------------
 # Municipality filter tool
 # --------------------------------------------------
 
 @tool
 def kommune_where_clause(name: str, geom_column: str, table_alias: str = "") -> str:
+   
+   
     """
     Return a PostGIS WHERE clause that restricts results to a Norwegian municipality
     using a bounding box derived from Kartverket APIs.
@@ -118,39 +134,52 @@ def kommune_where_clause(name: str, geom_column: str, table_alias: str = "") -> 
         geom_column: Geometry column name in the target table (e.g. 'representasjonspunkt', 'omrade', 'geometri').
         table_alias: Optional SQL table alias (e.g. 'b' gives 'b.omrade'). Leave empty for no alias.
     """
-    r = requests.get(
-        "https://api.kartverket.no/kommuneinfo/v1/sok",
-        params={"knavn": name},
-        timeout=10,
-    )
-    r.raise_for_status()
-    kommune_nr = r.json()["kommuner"][0]["kommunenummer"]
+   
+   
+   
+   
+    try:
+        r = requests.get(
+            "https://api.kartverket.no/kommuneinfo/v1/sok",
+            params={"knavn": name},
+            timeout=10,
+        )
+        r.raise_for_status()
+        kommuner = r.json().get("kommuner", [])
+        if not kommuner:
+            return f"-- ERROR: No municipality found for '{name}'"
 
-    r = requests.get(
-        f"https://api.test.kartverket.no/kommuneinfo/v1/kommuner/{kommune_nr}/omrade",
-        timeout=10,
-    )
-    r.raise_for_status()
-    coords = r.json()["omrade"]["coordinates"]
+        kommune_nr = kommuner[0]["kommunenummer"]
 
-    minx = miny = float("inf")
-    maxx = maxy = float("-inf")
+        r = requests.get(
+            f"https://api.kartverket.no/kommuneinfo/v1/kommuner/{kommune_nr}/omrade",
+            timeout=10,
+        )
+        r.raise_for_status()
+        coords = r.json()["omrade"]["coordinates"]
 
-    for polygon in coords:
-        for ring in polygon:
-            for lon, lat in ring:
-                minx = min(minx, lon)
-                miny = min(miny, lat)
-                maxx = max(maxx, lon)
-                maxy = max(maxy, lat)
+        minx = miny = float("inf")
+        maxx = maxy = float("-inf")
 
-    # Build qualified column reference
-    col_ref = f"{table_alias}.{geom_column}" if table_alias else geom_column
+        for polygon in coords:
+            for ring in polygon:
+                for lon, lat in ring:
+                    minx = min(minx, lon)
+                    miny = min(miny, lat)
+                    maxx = max(maxx, lon)
+                    maxy = max(maxy, lat)
 
-    return (
-        f"{col_ref} && ST_Transform("
-        f"ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326), 25833)"
-    )
+        col_ref = f"{table_alias}.{geom_column}" if table_alias else geom_column
+
+        return (
+            f"{col_ref} && ST_Transform("
+            f"ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326), 25833)"
+        )
+    except Exception as e:
+        return f"-- ERROR: kommune_where_clause failed for '{name}': {e}"
+    
+
+
 
 
 # --------------------------------------------------
