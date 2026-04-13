@@ -24,7 +24,9 @@ from agent_helpers import (
     _build_snapshot,
     _dedup,
     _empty_token_dict,
+    _executed_from_steps,
     _extract_tokens,
+    _fallback_answer_from_logs,
     _format_restart_summary,
     _log_entry_key,
     _parse_tool_result,
@@ -32,6 +34,8 @@ from agent_helpers import (
     _sql_repair_ok,
     _step_retry_ok,
     _short,
+    _task_completed_from_steps,
+    _valid_sql_from_steps,
 )
 from agent_tools_node import _tools_node, _get_tools
 
@@ -44,6 +48,22 @@ logger = logging.getLogger(__name__)
 
 
 _AGENT_GRAPH = None
+
+
+def _answer_looks_complete(answer: str) -> bool:
+    text = (answer or "").strip().lower()
+    if not text:
+        return False
+
+    incomplete_markers = (
+        "would you like",
+        "if you want",
+        "i can provide",
+        "i can also provide",
+        "do you want",
+        "let me know if you want",
+    )
+    return not any(marker in text for marker in incomplete_markers)
 
 
 
@@ -110,50 +130,47 @@ async def _model_node(state: AgentState) -> AgentState:
     tools = _get_tools()
     model = get_model(state["model_id"], tools, state["params"])
 
-    logger.debug(
-        "\n"
-        + "=" * 90 + "\n"
-        + "MODEL CALL\n"
-        + "=" * 90 + "\n"
-        + "  model              : %s\n"
-        + "  attempt            : %s\n"
-        + "  iter               : %s\n"
-        + "  restart            : %s\n"
-        + "  repair             : %s\n"
-        + "  total_model_calls  : %s\n"
-        + "  total_tools        : %s\n"
-        + "  msg_count          : %s\n"
-        + "  run_tokens         : %s\n"
-        + "  grand_tokens       : %s\n"
-        + "  last_validation_ok : %s\n"
-        + "  last_execute_ok    : %s\n"
-        + "  last_sql           : %s\n"
-        + "  last_val_error     : %s\n"
-        + "  last_exec_error    : %s\n"
-        + "  discovered_dbs     : %s\n"
-        + "  discovered_tables  : %s\n"
-        + "  total_api_calls    : %s\n"
-        + "=" * 90,
-        state["model_id"],
-        state.get("attempt_number", 0),
-        state.get("iterations", 0),
-        state.get("restart_count", 0),
-        state.get("sql_repair_count", 0),
-        state.get("total_iterations", 0),
-        state.get("total_tool_calls", 0),
-        len(state.get("msgs", [])),
-        state.get("attempt_tokens", {}).get("total_tokens", 0),
-        state.get("grand_total_tokens", {}).get("total_tokens", 0),
-        state.get("last_validation_ok", False),
-        state.get("last_execute_ok", False),
-        _short(state.get("last_sql") or "", 120),
-        _short(state.get("last_validation_error") or "", 120),
-        _short(state.get("last_execute_error") or "", 120),
-        state.get("discovered_databases", []),
-        state.get("discovered_tables", []),
-        state.get("total_api_calls", 0),
-    )
-    state["total_api_calls"] = state.get("total_api_calls", 0) + 1
+    # logger.debug(
+    #     "\n"
+    #     + "=" * 90 + "\n"
+    #     + "MODEL CALL\n"
+    #     + "=" * 90 + "\n"
+    #     + "  model              : %s\n"
+    #     + "  attempt            : %s\n"
+    #     + "  iter               : %s\n"
+    #     + "  restart            : %s\n"
+    #     + "  repair             : %s\n"
+    #     + "  total_model_calls  : %s\n"
+    #     + "  total_tools        : %s\n"
+    #     + "  msg_count          : %s\n"
+    #     + "  run_tokens         : %s\n"
+    #     + "  grand_tokens       : %s\n"
+    #     + "  last_validation_ok : %s\n"
+    #     + "  last_execute_ok    : %s\n"
+    #     + "  last_sql           : %s\n"
+    #     + "  last_val_error     : %s\n"
+    #     + "  last_exec_error    : %s\n"
+    #     + "  discovered_dbs     : %s\n"
+    #     + "  discovered_tables  : %s\n"
+    #     + "=" * 90,
+    #     state["model_id"],
+    #     state.get("attempt_number", 0),
+    #     state.get("iterations", 0),
+    #     state.get("restart_count", 0),
+    #     state.get("sql_repair_count", 0),
+    #     state.get("total_iterations", 0),
+    #     state.get("total_tool_calls", 0),
+    #     len(state.get("msgs", [])),
+    #     state.get("attempt_tokens", {}).get("total_tokens", 0),
+    #     state.get("grand_total_tokens", {}).get("total_tokens", 0),
+    #     state.get("last_validation_ok", False),
+    #     state.get("last_execute_ok", False),
+    #     _short(state.get("last_sql") or "", 120),
+    #     _short(state.get("last_validation_error") or "", 120),
+    #     _short(state.get("last_execute_error") or "", 120),
+    #     state.get("discovered_databases", []),
+    #     state.get("discovered_tables", []),
+    # )
     state["crash_snapshot"] = _build_snapshot(state)
 
     try:
@@ -164,25 +181,25 @@ async def _model_node(state: AgentState) -> AgentState:
         raise AgentRunError(str(e), snapshot=state["crash_snapshot"])
 
     tool_names = [tc["name"] for tc in (ai.tool_calls or [])]
-    logger.debug(
-        "\n"
-        + "-" * 90 + "\n"
-        + "MODEL RESULT\n"
-        + "-" * 90 + "\n"
-        + "  model              : %s\n"
-        + "  attempt            : %s\n"
-        + "  iteration          : %s\n"
-        + "  tool_calls         : %s\n"
-        + "  tool_names         : %s\n"
-        + "  ai_content         : %s\n"
-        + "-" * 90,
-        state["model_id"],
-        state.get("attempt_number", 0),
-        state.get("iterations", 0) + 1,
-        len(ai.tool_calls or []),
-        tool_names if tool_names else "none",
-        _short((ai.content or "").strip(), 200) if not ai.tool_calls else "(tool call response)",
-    )
+    # logger.debug(
+    #     "\n"
+    #     + "-" * 90 + "\n"
+    #     + "MODEL RESULT\n"
+    #     + "-" * 90 + "\n"
+    #     + "  model              : %s\n"
+    #     + "  attempt            : %s\n"
+    #     + "  iteration          : %s\n"
+    #     + "  tool_calls         : %s\n"
+    #     + "  tool_names         : %s\n"
+    #     + "  ai_content         : %s\n"
+    #     + "-" * 90,
+    #     state["model_id"],
+    #     state.get("attempt_number", 0),
+    #     state.get("iterations", 0) + 1,
+    #     len(ai.tool_calls or []),
+    #     tool_names if tool_names else "none",
+    #     _short((ai.content or "").strip(), 200) if not ai.tool_calls else "(tool call response)",
+    # )
 
     iter_tokens = _extract_tokens(ai)
     attempt_tokens = dict(state["attempt_tokens"])
@@ -288,6 +305,7 @@ def _restart_or_finish_node(state: AgentState) -> AgentState:
         "last_validated_sql": None,
         "last_validation_ok": False,
         "last_validation_error": None,
+        "last_guard_error": None,
         "last_execute_ok": False,
         "last_execute_error": None,
         "last_executed_result": state.get("last_executed_result") if any_executed else None,
@@ -306,7 +324,6 @@ def _restart_or_finish_node(state: AgentState) -> AgentState:
 
         "sql_repair_counts": {},
 
-        #"step_retry_counts": {},
 
 
 
@@ -334,35 +351,54 @@ def _finalize_node(state: AgentState) -> AgentState:
             all_run_logs.append(new_entry)
         state["all_run_logs"] = all_run_logs
 
+    if not current_answer:
+        current_answer = _fallback_answer_from_logs(
+            state.get("all_run_logs", []),
+            state.get("current_run_log", []),
+        )
+
+    run_logs = list(state.get("all_run_logs", []))
     steps = dict(state.get("step_registry", {}))
     query_steps = [s for s in steps.values() if s.get("action") == "query"]
     all_steps = list(steps.values())
 
     any_executed = any(s.get("executed", False) for s in all_steps)
-
-    if query_steps:
-        all_validated = all(s.get("validated", False) for s in query_steps)
-        all_executed = all(s.get("executed", False) for s in all_steps)
-        last_step = max(all_steps, key=lambda s: s.get("step", 0), default=None)
-        has_result = bool(last_step and last_step.get("executed", False))
-    else:
-        all_validated = state.get("last_validation_ok", False)
-        all_executed = any_executed or state.get("last_execute_ok", False)
-        has_result = state.get("last_executed_result") is not None
+    all_validated = (
+        all(s.get("validated", False) for s in query_steps)
+        if query_steps else state.get("last_validation_ok", False)
+    )
+    all_executed = (
+        all(s.get("executed", False) for s in all_steps)
+        if all_steps else state.get("last_execute_ok", False)
+    )
+    has_result = state.get("last_executed_result") is not None
 
     has_answer = bool(current_answer)
+    answer_complete = _answer_looks_complete(current_answer)
 
-    if not all_executed:
+    step_valid_sql = _valid_sql_from_steps(run_logs, valid_sql_fallback=all_validated)
+    step_executed = _executed_from_steps(run_logs, executed_fallback=any_executed or all_executed)
+    step_task_completed = _task_completed_from_steps(
+        run_logs,
+        task_completed_fallback=all_executed,
+    )
+
+    if not step_task_completed:
         current_answer = ""
         state["all_errors"] = _dedup(
             list(state.get("all_errors", [])) + ["Not all planned steps executed successfully."]
         )
 
-    state["valid_sql"] = all_validated
-    state["last_execute_ok"] = all_executed
+    if step_task_completed:
+        state["last_validation_error"] = None
+        state["last_guard_error"] = None
+        state["last_execute_error"] = None
+
+    state["valid_sql"] = step_valid_sql
+    state["last_execute_ok"] = step_executed
     state["answer"] = current_answer
-    state["answer_based_on_result"] = all_executed and has_result and has_answer
-    state["task_completed"] = all_executed and has_result and has_answer
+    state["answer_based_on_result"] = step_task_completed and has_result and has_answer and answer_complete
+    state["task_completed"] = step_task_completed
     state["done"] = True
     state["crash_snapshot"] = _build_snapshot(state)
     return state
@@ -402,7 +438,7 @@ def _route_after_tools(state: AgentState) -> str:
         return "restart_or_finish"
 
     if iter_had_error:
-        parsed_err = _parse_tool_result(state.get("last_execute_error"))
+        parsed_err = _parse_tool_result(state.get("last_guard_error") or state.get("last_execute_error"))
 
         if isinstance(parsed_err, dict):
             if str(parsed_err.get("error", "")).endswith("blocked."):
@@ -478,4 +514,3 @@ def _build_agent_graph():
     )
     graph.add_edge("finalize", END)
     return graph.compile()
-

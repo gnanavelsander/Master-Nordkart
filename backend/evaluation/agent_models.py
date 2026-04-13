@@ -17,6 +17,7 @@ class AgentTrace:
     tables_explored: list[str]
     tables_in_result: list[str]
     databases_explored: list[str]
+    
     databases_in_result: list[str]
     validated_before_exec: bool
     executed_successfully: bool
@@ -45,18 +46,23 @@ class ModelParams:
 class AgentResult:
     answer: str
     sql: str | None
+
     result_data: Any | None
     executed: bool
+
     valid_sql: bool
     iterations: int
+
     sql_repairs_used: int
     restarts_used: int
+
     logs: list
     all_errors: list[str]
+
     tokens: TokenUsage | None = None
+
     task_completed: bool = False
     answer_based_on_result: bool = False
-    total_api_calls: int = 0
 
 
 @dataclass
@@ -77,7 +83,6 @@ class PipelineResult:
     run_logs: list | None = None
     task_completed: bool = False
     answer_based_on_result: bool = False
-    total_api_calls: int = 0
 
 
 @dataclass
@@ -95,48 +100,6 @@ class EvalRun:
 
 
 
-
-class PlanStep(BaseModel):
-    step: int
-    action: Literal[
-        "query", "filter", "select_columns", "spatial_join", "attribute_join",
-        "buffer", "nearest", "distance", "aggregate", "sort", "limit",
-        "clip", "union", "intersection", "difference", "dissolve", "centroid", "transform_crs",
-    ]
-    database: Optional[str] = None
-    sql: Optional[str] = None
-    validSql: Optional[str] = None
-    source_step: Optional[int] = None
-    left_source: Optional[int] = None
-    right_source: Optional[int] = None
-    join_type: Optional[Literal["intersects", "within", "contains", "dwithin", "touches", "overlaps"]] = None
-    left_geom: Optional[str] = None
-    right_geom: Optional[str] = None
-    distance_meters: Optional[float] = None
-    buffer_distance: Optional[float] = None
-    filters: list[str] = Field(default_factory=list)
-    select_columns: list[str] = Field(default_factory=list)
-    output_columns: list[str] = Field(default_factory=list)
-    group_by: list[str] = Field(default_factory=list)
-    aggregation_type: Optional[Literal["count", "sum", "avg", "min", "max"]] = None
-    metric_column: Optional[str] = None
-    metric_as: Optional[str] = None
-    order_by: Optional[str] = None
-    order_direction: Optional[Literal["asc", "desc"]] = None
-    limit: Optional[int] = None
-    target_crs: Optional[str] = None
-    join_keys: list[str] = Field(default_factory=list)
-
-    schema_name: Optional[str] = None
-    table_name: Optional[str] = None
-
-
-
-
-
-class QueryPlan(BaseModel):
-    query_mode: Literal["single_db", "multi_db"]
-    steps: list[PlanStep] = Field(default_factory=list)
 
 
 
@@ -174,6 +137,7 @@ class AgentState(TypedDict, total=False):
     last_validated_sql: Optional[str]
     last_validation_ok: bool
     last_validation_error: Optional[str]
+    last_guard_error: Optional[str]
  
     last_executed_result: Any      
     last_execute_error: Optional[str]
@@ -195,14 +159,12 @@ class AgentState(TypedDict, total=False):
     total_sql_repairs: int
     total_iterations: int
     total_tool_calls: int
-    total_api_calls: int
 
 
 
     step_retry_count: int            
     total_step_retries: int
  
-    #step_retry_counts: dict         
    
    
    
@@ -238,4 +200,3 @@ class AgentRunError(Exception):
     def __init__(self, message: str, snapshot: dict | None = None):
         super().__init__(message)
         self.snapshot = snapshot or {}
-

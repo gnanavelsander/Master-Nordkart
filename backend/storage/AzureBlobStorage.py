@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 blob_service = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
 
-src = "agent_benchmark_runstest"
+src = "storage13.4"
 
 
 def query_hash(query: str) -> str:

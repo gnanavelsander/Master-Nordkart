@@ -11,10 +11,10 @@ from backend.mcp.server.models import AppContext
 
 from backend.database import PoolManager
 from config import (
-    PGCONN_MATRIKKEL, PGCONN_BRANNSTASJONER, PGCONN_FLOMSONER,
+    PGCONN_FYLKER_GIS, PGCONN_MATRIKKEL, PGCONN_BRANNSTASJONER, PGCONN_FLOMSONER,
     PGCONN_FLOMAKTSOMRADER, PGCONN_KVIKKLEIRE,
     PGCONN_MATRIKKELENEIENDOMSKARTTEIG, PGCONN_SNOSKREDAKTSOMHETSKART,
-    PGCONN_AKTSOMHETSKART_JORD_FLOMSKRED, PGCONN_KOMMUNER,
+    PGCONN_AKTSOMHETSKART_JORD_FLOMSKRED, PGCONN_KOMMUNER, PGCONN_STATISTISKRUTENETT1KM_GIS, PGCONN_STEDSNAVN_GIS, PGCONN_TRAFIKKMENGDE_GIS,
 )
 import os, tempfile, uuid
 
@@ -32,6 +32,11 @@ async def app_lifespan(server):
         "matrikkeleneiendomskartteig":   await pool_manager.connect(PGCONN_MATRIKKELENEIENDOMSKARTTEIG),
         "aktsomhetskart_jord_flomskred": await pool_manager.connect(PGCONN_AKTSOMHETSKART_JORD_FLOMSKRED),
         "kommuner":                      await pool_manager.connect(PGCONN_KOMMUNER),
+
+        "fylker": await pool_manager.connect(PGCONN_FYLKER_GIS),
+        "statistiskrutenett1km": await pool_manager.connect(PGCONN_STATISTISKRUTENETT1KM_GIS),
+        "trafikkmengde": await pool_manager.connect(PGCONN_TRAFIKKMENGDE_GIS),
+        "stedsnavn": await pool_manager.connect(PGCONN_STEDSNAVN_GIS),
     }
     try:
         yield AppContext(db=pool_manager, conn_ids=conn_ids, step_results={}, duckdb_path=duck_path)

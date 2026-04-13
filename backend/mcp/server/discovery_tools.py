@@ -165,10 +165,11 @@ DB_DESCRIPTIONS = {
     "matrikkeleneiendomskartteig":   "Property parcel / cadastral parcel data.",
     "aktsomhetskart_jord_flomskred": "Soil and flood landslide susceptibility data.",
     "kommuner":                      "Municipality boundaries and municipality reference data.",
+    "fylker":                        "County boundaries and county reference data.",
+    "statistiskrutenett1km":         "Statistical 1 km grid cells for aggregation and spatial analysis.",
+    "trafikkmengde":                 "Road traffic volume data linked to transport network segments.",
+    "stedsnavn":                     "Place names and named locations with geographic references.",
 }
-
-
-
 
 
 
