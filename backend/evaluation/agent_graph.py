@@ -246,24 +246,37 @@ def _sql_repair_node(state: AgentState) -> AgentState:
     repair_msg = f"""
 The SQL failed validation.
 
+Original user query:
+{state.get("user_input")}
+
 Last SQL:
 {state.get("last_sql")}
 
 Validation error:
 {state.get("last_validation_error")}
 
-Fix the SQL.
+Discovered databases:
+{state.get("discovered_databases", [])}
+
+Discovered tables:
+{state.get("discovered_tables", [])}
+
+Fix only this SQL step.
 Use already discovered metadata when possible.
 Validate again before execution.
 Do not guess final results.
+Do not restart the full plan.
 """.strip()
 
-    msgs = list(state["msgs"])
-    msgs.append(HumanMessage(content=repair_msg))
-    state["msgs"] = msgs
+    state["msgs"] = [
+        SystemMessage(content=state["prompt"]),
+        HumanMessage(content=repair_msg),
+    ]
     state["current_ai_is_final_answer"] = False
     state["crash_snapshot"] = _build_snapshot(state)
     return state
+
+
 
 
 
