@@ -14,6 +14,11 @@ async def get_available_databases() -> list[str]:
     return data
 
 
+async def prefetch_databases(database_names: list[str]) -> dict:
+    raw = await mcp_call("prefetch_databases", {"databaseNames": database_names})
+    return _parse(raw, "prefetch_databases")
+
+
 async def get_available_schemas(databaseName: str) -> dict:
     raw = await mcp_call("get_available_schemas", {"databaseName": databaseName})
     return _parse(raw, "get_available_schemas")

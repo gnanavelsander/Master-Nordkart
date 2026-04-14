@@ -438,6 +438,9 @@ def _print_details(results: list):
             continue
 
         trace = extract_agent_trace(r)
+        retrieval = {}
+        if r.run_logs:
+            retrieval = dict((r.run_logs[-1] or {}).get("retrieval", {}))
         logger.info("[%s]", r.model_id)
         logger.info("  valid_sql          : %s", r.valid_sql)
         logger.info("  executed           : %s", r.executed)
@@ -446,6 +449,13 @@ def _print_details(results: list):
         logger.info("  sql_repairs_used   : %s", r.sql_repairs_used)
         logger.info("  restarts_used      : %s", r.restarts_used)
         logger.info("  latency_s          : %.3f", r.latency_s)
+        if retrieval:
+            logger.info("  retrieval_score    : %s", retrieval.get("top_score"))
+            logger.info("  retrieval_scoped   : %s", retrieval.get("scope_active"))
+            logger.info(
+                "  retrieval_candidates: %s",
+                [c.get("full_name") for c in retrieval.get("candidates", [])],
+            )
 
         step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(r.run_logs)
         failed_summary = _failed_step_summary(r.run_logs)

@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
 load_dotenv()
 
@@ -24,6 +25,12 @@ PGCONN_AKTSOMHETSKART_JORD_FLOMSKRED = os.getenv("PGCONN_AKTSOMHETSKART_JORD_FLO
 PGCONN_KOMMUNER = os.getenv("PGCONN_KOMMUNER_GIS")
 
 
+PGCONN_FYLKER_GIS = os.getenv("PGCONN_FYLKER_GIS")
+PGCONN_STATISTISKRUTENETT1KM_GIS = os.getenv("PGCONN_STATISTISKRUTENETT1KM_GIS")
+PGCONN_TRAFIKKMENGDE_GIS = os.getenv("PGCONN_TRAFIKKMENGDE_GIS")
+PGCONN_STEDSNAVN_GIS = os.getenv("PGCONN_STEDSNAVN_GIS")
+
+
 
 
 
@@ -34,12 +41,6 @@ AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_FOUNDRY_KEY = os.getenv("AZURE_FOUNDRY_KEY")
 AZURE_FOUNDRY_ENDPOINT = os.getenv("AZURE_FOUNDRY_ENDPOINT")
 
-
-
-PGCONN_FYLKER_GIS = os.getenv("PGCONN_FYLKER_GIS")
-PGCONN_STATISTISKRUTENETT1KM_GIS = os.getenv("PGCONN_STATISTISKRUTENETT1KM_GIS")
-PGCONN_TRAFIKKMENGDE_GIS = os.getenv("PGCONN_TRAFIKKMENGDE_GIS")
-PGCONN_STEDSNAVN_GIS = os.getenv("PGCONN_STEDSNAVN_GIS")
 
 
 
@@ -97,6 +98,13 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT = os.getenv(
     "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large"
 )
 
+EMBEDDINGS_TOP_K = int(os.getenv("EMBEDDINGS_TOP_K", "8"))
+EMBEDDINGS_MIN_SCORE = float(os.getenv("EMBEDDINGS_MIN_SCORE", "0.20"))
+EMBEDDINGS_TABLE_INDEX_PATH = os.getenv(
+    "EMBEDDINGS_TABLE_INDEX_PATH",
+    str(Path(__file__).resolve().parent / "backend" / "embeddings" / "table_index.json"),
+)
+
 
 
 OLLAMA_MODEL_IDS = {
@@ -110,8 +118,24 @@ OLLAMA_MODEL_IDS = {
 #blob storage
 
 
-
 AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 AZURE_STORAGE_CONTAINER = "llmevaluator"
 
 
+
+
+DB_DESCRIPTIONS = {
+    "matrikkelenbygning": "Building and cadastral building data, including building identifiers, municipality attributes, status fields, and building representation points.",
+    "flomaktsomrader": "Flood hazard and flood susceptibility spatial data, including hazard polygons and related flood-risk layers.",
+    "flomsoner": "Flood zone spatial data, including flood hazard polygons and flood zone identifiers.",
+    "brannstasjoner": "Fire station location data and related spatial reference information.",
+    "kvikkleire": "Quick clay hazard data and related landslide-risk spatial layers.",
+    "snoskredaktsomhetskart": "Snow avalanche susceptibility data and related hazard zones.",
+    "matrikkeleneiendomskartteig": "Property parcel data with parcel identifiers, municipality attributes, parcel polygons, and cadastral parcel metadata.",
+    "aktsomhetskart_jord_flomskred": "Soil and flood landslide susceptibility data and related hazard layers.",
+    "kommuner": "Municipality boundary and municipality reference data, including official municipality names, municipality numbers, and municipality polygons.",
+    "fylker": "County boundary and county reference data, including official county names, county numbers, and county polygons.",
+    "statistiskrutenett1km": "Regular 1 km statistical grid for spatial aggregation and grid-based analysis independent of municipality boundaries.",
+    "trafikkmengde": "Road traffic volume data linked to road segments, useful for traffic intensity filtering and transport-related spatial analysis.",
+    "stedsnavn": "Place name data with coordinates, language form, municipality affiliation, and place name type.",
+}

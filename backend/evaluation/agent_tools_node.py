@@ -33,6 +33,8 @@ from agent_helpers import (
 from backend.tools.langchain_tools import (
     kommune_where_clause,
     tool_get_available_databases,
+    tool_get_available_schemas,
+    tool_get_available_tables,
     tool_get_table_schema,
     tool_get_database_catalog,
     tool_validate_sql,
@@ -55,6 +57,7 @@ from backend.tools.langchain_tools import (
     tool_execute_centroid_step,
     tool_execute_transform_crs_step,
 )
+from backend.embeddings.retrieve_layers import build_filtered_catalog, is_candidate_in_scope
 
 
 
@@ -738,6 +741,102 @@ def _handle_discovery_tool(
             state["discovered_tables"] = _dedup(list(state.get("discovered_tables", [])) + [table])
 
 
+def _run_retrieval_scoped_discovery_tool(
+    state: "AgentState",
+    name: str,
+    args: dict,
+) -> str | None:
+    if not state.get("retrieval_scope_active", False):
+        return None
+
+    retrieval_candidates = state.get("retrieval_candidates") or []
+    if not retrieval_candidates:
+        return None
+
+    if name == "tool_get_available_databases":
+        databases = sorted(
+            {
+                str(item.get("database") or "").strip()
+                for item in retrieval_candidates
+                if item.get("database")
+            }
+        )
+        return json.dumps(databases, ensure_ascii=False)
+
+    if name == "tool_get_available_schemas":
+        database_name = str(args.get("databaseName") or "").strip()
+        schemas = sorted(
+            {
+                str(item.get("schema") or "").strip()
+                for item in retrieval_candidates
+                if item.get("database") == database_name and item.get("schema")
+            }
+        )
+        return json.dumps(
+            {"databaseName": database_name, "schemas": schemas},
+            ensure_ascii=False,
+        )
+
+    if name == "tool_get_available_tables":
+        database_name = str(args.get("databaseName") or "").strip()
+        schema_name = str(args.get("schemaName") or "").strip()
+        tables = sorted(
+            {
+                str(item.get("table") or "").strip()
+                for item in retrieval_candidates
+                if item.get("database") == database_name
+                and item.get("schema") == schema_name
+                and item.get("table")
+            }
+        )
+        return json.dumps(
+            {
+                "databaseName": database_name,
+                "schemaName": schema_name,
+                "tables": tables,
+            },
+            ensure_ascii=False,
+        )
+
+    if name == "tool_get_database_catalog":
+        return json.dumps(
+            build_filtered_catalog(
+                retrieval_candidates,
+                database_name=args.get("databaseName"),
+                schema_name=args.get("schemaName"),
+            ),
+            ensure_ascii=False,
+        )
+
+    if name == "tool_get_table_schema":
+        database_name = str(args.get("databaseName") or "").strip()
+        schema_name = str(args.get("schemaName") or "").strip()
+        table_name = str(args.get("table_name") or "").strip()
+
+        if not is_candidate_in_scope(
+            retrieval_candidates,
+            database_name=database_name,
+            schema_name=schema_name,
+            table_name=table_name,
+        ):
+            return json.dumps(
+                {
+                    "error": (
+                        f"Table '{database_name}.{schema_name}.{table_name}' is outside the "
+                        "retrieval candidate scope. Use one of the pre-retrieved candidates first."
+                    ),
+                    "allowed_candidates": [
+                        item.get("full_name")
+                        for item in retrieval_candidates
+                        if item.get("full_name")
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+    return None
+
+
 
 
 
@@ -849,8 +948,8 @@ def _get_tools():
     return [
         #kommune_where_clause,
         tool_get_available_databases,
-        #tool_get_available_schemas,
-        #tool_get_available_tables,
+        tool_get_available_schemas,
+        tool_get_available_tables,
 
 
 
@@ -964,7 +1063,11 @@ async def _tools_node(state: AgentState) -> AgentState:
                 _handle_validate_sql_tool(state, args, result_str, iter_flags)
 
             else:
-                result_str = await tool.ainvoke(args)
+                scoped_result = _run_retrieval_scoped_discovery_tool(state, name, args)
+                if scoped_result is not None:
+                    result_str = scoped_result
+                else:
+                    result_str = await tool.ainvoke(args)
                 _handle_discovery_tool(state, name, args, result_str)
 
             _build_tool_message_and_log(

@@ -294,6 +294,11 @@ def _run_log_entry_from_state(state: "AgentState") -> dict:
     return {
         "attempt_number": state.get("attempt_number", 0),
         "run_index": state.get("restart_count", 0),
+        "retrieval": {
+            "scope_active": state.get("retrieval_scope_active", False),
+            "top_score": state.get("retrieval_top_score"),
+            "candidates": list(state.get("retrieval_candidates", [])),
+        },
         "sql_repairs_used": sum(sql_repair_counts.values()),
         "sql_repair_counts": sql_repair_counts,
         "iterations": list(state.get("current_run_log", [])),
@@ -362,6 +367,11 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
 
     return {
         "model_id": state.get("model_id"),
+        "retrieval": {
+            "scope_active": state.get("retrieval_scope_active", False),
+            "top_score": state.get("retrieval_top_score"),
+            "candidates": list(state.get("retrieval_candidates", [])),
+        },
         "valid_sql": valid_sql,
         "executed": executed,
         "task_completed": task_completed,
@@ -420,6 +430,19 @@ def _accumulate_retry_snapshots(base: dict | None, new: dict | None) -> dict:
     merged["discovered_tables"] = _dedup(
         list(base.get("discovered_tables", [])) + list(new.get("discovered_tables", []))
     )
+    base_retrieval = dict(base.get("retrieval", {}))
+    new_retrieval = dict(new.get("retrieval", {}))
+    merged["retrieval"] = {
+        "scope_active": bool(
+            new_retrieval.get("scope_active", base_retrieval.get("scope_active", False))
+        ),
+        "top_score": (
+            new_retrieval.get("top_score")
+            if new_retrieval.get("top_score") is not None
+            else base_retrieval.get("top_score")
+        ),
+        "candidates": list(new_retrieval.get("candidates") or base_retrieval.get("candidates") or []),
+    }
     merged["final_sql"] = new.get("final_sql") or base.get("final_sql")
     merged["last_validation_error"] = (
         new.get("last_validation_error") or base.get("last_validation_error")

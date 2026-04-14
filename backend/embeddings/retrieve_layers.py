@@ -1,7 +1,31 @@
 import json
 import math
+from functools import lru_cache
 from pathlib import Path
+from typing import Any
+
 from .embeddings import embed_text
+
+
+_DEFAULT_INDEX_PATH = Path(__file__).parent / "table_index.json"
+_SMALL_TABLE_ALL_COLUMNS_THRESHOLD = 8
+_IMPORTANT_COLUMN_TOKENS = (
+    "id",
+    "name",
+    "navn",
+    "type",
+    "kategori",
+    "category",
+    "status",
+    "date",
+    "dato",
+    "year",
+    "kode",
+    "code",
+    "nr",
+    "nummer",
+)
+_GEOMETRY_TYPE_MARKERS = {"user-defined", "geometry"}
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -15,47 +39,280 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
-def load_index(path: str = "table_index.json") -> list[dict]:
-    base = Path(__file__).parent
-    index_path = base / path
+def _normalize_columns(item: dict[str, Any]) -> list[dict[str, str]]:
+    columns = item.get("selected_columns") or item.get("columns") or []
+    normalized: list[dict[str, str]] = []
+
+    for col in columns:
+        if not isinstance(col, dict):
+            continue
+        name = str(col.get("name") or col.get("column_name") or "").strip()
+        data_type = str(col.get("type") or col.get("data_type") or "").strip()
+        if not name:
+            continue
+        normalized.append({"name": name, "type": data_type})
+
+    return normalized
+
+
+def _infer_geometry_column(item: dict[str, Any], columns: list[dict[str, str]]) -> str | None:
+    geom = item.get("geometry_column") or item.get("recommended_geometry_column")
+    if isinstance(geom, str) and geom.strip():
+        return geom.strip()
+
+    for col in columns:
+        data_type = (col.get("type") or "").strip().lower()
+        if data_type in _GEOMETRY_TYPE_MARKERS:
+            return col["name"]
+        if col["name"].strip().lower() in {"geom", "geometry", "geometri"}:
+            return col["name"]
+
+    return None
+
+
+def _is_informative_column(name: str, data_type: str, geometry_column: str | None) -> bool:
+    lowered_name = name.lower()
+    lowered_type = data_type.lower()
+
+    if geometry_column and name == geometry_column:
+        return True
+    if any(token in lowered_name for token in _IMPORTANT_COLUMN_TOKENS):
+        return True
+    if lowered_type in _GEOMETRY_TYPE_MARKERS:
+        return True
+
+    return False
+
+
+def select_catalog_columns(item: dict[str, Any]) -> list[dict[str, str]]:
+    columns = _normalize_columns(item)
+    if len(columns) <= _SMALL_TABLE_ALL_COLUMNS_THRESHOLD:
+        return columns
+
+    geometry_column = _infer_geometry_column(item, columns)
+    selected = [
+        col for col in columns
+        if _is_informative_column(col["name"], col.get("type", ""), geometry_column)
+    ]
+
+    if not selected:
+        selected = columns[:_SMALL_TABLE_ALL_COLUMNS_THRESHOLD]
+
+    seen: set[str] = set()
+    deduped: list[dict[str, str]] = []
+    for col in selected:
+        key = col["name"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(col)
+
+    return deduped
+
+
+def build_catalog_embedding_text(item: dict[str, Any]) -> str:
+    database = str(item.get("database") or "").strip()
+    schema = str(item.get("schema") or "").strip()
+    table = str(item.get("table") or "").strip()
+    description = str(item.get("short_description") or item.get("description") or "").strip()
+
+    selected_columns = select_catalog_columns(item)
+    geometry_column = _infer_geometry_column(item, _normalize_columns(item))
+
+    column_bits = [
+        f"{col['name']} ({col.get('type', '')})".strip()
+        for col in selected_columns
+    ]
+
+    parts = [
+        f"database: {database}",
+        f"schema: {schema}",
+        f"table: {table}",
+    ]
+    if description:
+        parts.append(f"description: {description}")
+    if geometry_column:
+        parts.append(f"geometry column: {geometry_column}")
+    if column_bits:
+        parts.append(f"important columns: {', '.join(column_bits)}")
+
+    return ". ".join(parts).strip()
+
+
+def _normalize_candidate(item: dict[str, Any], score: float) -> dict[str, Any]:
+    columns = _normalize_columns(item)
+    geometry_column = _infer_geometry_column(item, columns)
+    selected_columns = select_catalog_columns(
+        {
+            **item,
+            "columns": columns,
+            "geometry_column": geometry_column,
+        }
+    )
+
+    description = str(item.get("short_description") or item.get("description") or "").strip()
+
+    return {
+        "database": str(item.get("database") or "").strip(),
+        "database_description": str(item.get("database_description") or "").strip(),
+        "schema": str(item.get("schema") or "").strip(),
+        "table": str(item.get("table") or "").strip(),
+        "full_name": str(
+            item.get("full_name")
+            or ".".join(
+                part for part in [
+                    str(item.get("database") or "").strip(),
+                    str(item.get("schema") or "").strip(),
+                    str(item.get("table") or "").strip(),
+                ] if part
+            )
+        ),
+        "description": description,
+        "geometry_column": geometry_column,
+        "selected_columns": selected_columns,
+        "score": score,
+    }
+
+
+@lru_cache(maxsize=4)
+def load_index(path: str | None = None) -> list[dict]:
+    index_path = Path(path) if path else _DEFAULT_INDEX_PATH
     with open(index_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def retrieve_relevant_tables_with_embeddings(
+def retrieve_catalog_candidates(
     user_text: str,
     k: int = 5,
-    index_path: str = "table_index.json",
-) -> list[dict]:
+    index_path: str | None = None,
+) -> list[dict[str, Any]]:
     index = load_index(index_path)
-    q = embed_text(user_text)
+    query_vector = embed_text(user_text)
 
-    scored = []
+    scored: list[dict[str, Any]] = []
     for item in index:
-        s = cosine(q, item["embedding"])
-        scored.append({
-            **item,
-            "score": s,
-        })
+        embedding = item.get("embedding") or []
+        score = cosine(query_vector, embedding)
+        scored.append(_normalize_candidate(item, score=score))
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:k]
 
 
-def format_table_context(top_tables: list[dict]) -> str:
-    lines = ["AVAILABLE TABLES (most relevant):"]
+def format_table_context(top_tables: list[dict[str, Any]]) -> str:
+    return build_retrieval_context(top_tables)
 
-    for item in top_tables:
-        if "sample" in item["table"].lower():
-            continue
 
-        cols = ", ".join(
-            f"{c['name']} ({c['type']})"
-            for c in item.get("columns", [])[:8]
+def build_retrieval_context(candidates: list[dict[str, Any]]) -> str:
+    if not candidates:
+        return ""
+
+    lines = [
+        "Pre-retrieved catalog candidates:",
+        "Use these databases, schemas, and tables first before broader catalog discovery.",
+    ]
+
+    for item in candidates:
+        column_bits = ", ".join(
+            f"{col['name']} ({col.get('type', '')})"
+            for col in item.get("selected_columns", [])[:8]
         )
+        extras: list[str] = []
+        if item.get("geometry_column"):
+            extras.append(f"geometry={item['geometry_column']}")
+        if column_bits:
+            extras.append(f"columns={column_bits}")
+        if item.get("description"):
+            extras.append(f"description={item['description']}")
 
+        suffix = f" | {'; '.join(extras)}" if extras else ""
         lines.append(
-            f"- {item['database']}.{item['schema']}.{item['table']}: {cols}"
+            f"- {item['database']}.{item['schema']}.{item['table']} (score={item['score']:.3f}){suffix}"
         )
 
     return "\n".join(lines)
+
+
+def build_filtered_catalog(
+    candidates: list[dict[str, Any]],
+    database_name: str | None = None,
+    schema_name: str | None = None,
+) -> dict[str, Any]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    for item in candidates:
+        db = item.get("database")
+        schema = item.get("schema")
+        if database_name and db != database_name:
+            continue
+        if schema_name and schema != schema_name:
+            continue
+
+        grouped.setdefault((db, schema), []).append(
+            {
+                "table": item.get("table"),
+                "geometry_columns": (
+                    [{"column_name": item["geometry_column"]}]
+                    if item.get("geometry_column") else []
+                ),
+                "recommended_geometry_column": item.get("geometry_column"),
+                "selected_columns": item.get("selected_columns", []),
+                "description": item.get("description", ""),
+            }
+        )
+
+    databases: list[dict[str, Any]] = []
+    by_db: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for (db, schema), tables in grouped.items():
+        by_db.setdefault(db, {})[schema] = tables
+
+    for db, schemas in sorted(by_db.items()):
+        db_description = ""
+        for item in candidates:
+            if item.get("database") == db and item.get("database_description"):
+                db_description = str(item.get("database_description") or "")
+                break
+        databases.append(
+            {
+                "database": db,
+                "description": db_description,
+                "schemas": [
+                    {"schema": schema, "tables": tables}
+                    for schema, tables in sorted(schemas.items())
+                ],
+            }
+        )
+
+    return {"databases": databases}
+
+
+def is_candidate_in_scope(
+    candidates: list[dict[str, Any]],
+    database_name: str,
+    schema_name: str,
+    table_name: str,
+) -> bool:
+    for item in candidates:
+        if (
+            item.get("database") == database_name
+            and item.get("schema") == schema_name
+            and item.get("table") == table_name
+        ):
+            return True
+    return False
+
+
+def list_candidate_full_names(candidates: list[dict[str, Any]]) -> list[str]:
+    return [str(item.get("full_name") or "") for item in candidates if item.get("full_name")]
+
+
+def list_candidate_table_names(candidates: list[dict[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    tables: list[str] = []
+    for item in candidates:
+        table = str(item.get("table") or "").strip()
+        if not table or table in seen:
+            continue
+        seen.add(table)
+        tables.append(table)
+    return tables

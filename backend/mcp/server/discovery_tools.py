@@ -11,6 +11,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+from config import DB_DESCRIPTIONS
+
+
+
+
 # --------------------------------------------------
 # Base query tool
 # --------------------------------------------------
@@ -46,6 +52,18 @@ async def run_postgis_query(ctx: Context[ServerSession, AppContext], sql: str, d
 async def get_available_databases(ctx: Context[ServerSession, AppContext]) -> str:
     try:
         return json.dumps(list(ctx.request_context.lifespan_context.conn_ids.keys()), ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="prefetch_databases",
+    description="Open database connections eagerly for the provided database names.",
+)
+async def prefetch_databases(ctx: Context[ServerSession, AppContext], databaseNames: list[str]) -> str:
+    try:
+        opened = await ctx.request_context.lifespan_context.db.prefetch(databaseNames)
+        return json.dumps({"opened": opened}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -153,23 +171,6 @@ async def get_table_schema(ctx: Context[ServerSession, AppContext], databaseName
                                        for r in rows]}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-DB_DESCRIPTIONS = {
-    "matrikkelenbygning":            "Building and cadastral building data.",
-    "flomsoner":                     "Flood zone related spatial layers.",
-    "flomaktsomrader":               "Flood hazard / susceptibility areas.",
-    "brannstasjoner":                "Fire station locations and related data.",
-    "kvikkleire":                    "Quick clay hazard data.",
-    "snoskredaktsomhetskart":        "Snow avalanche susceptibility data.",
-    "matrikkeleneiendomskartteig":   "Property parcel / cadastral parcel data.",
-    "aktsomhetskart_jord_flomskred": "Soil and flood landslide susceptibility data.",
-    "kommuner":                      "Municipality boundaries and municipality reference data.",
-    "fylker":                        "County boundaries and county reference data.",
-    "statistiskrutenett1km":         "Statistical 1 km grid cells for aggregation and spatial analysis.",
-    "trafikkmengde":                 "Road traffic volume data linked to transport network segments.",
-    "stedsnavn":                     "Place names and named locations with geographic references.",
-}
 
 
 

@@ -185,6 +185,10 @@ class AgentState(TypedDict, total=False):
 
 
 
+    retrieval_candidates: list[dict]
+    retrieval_scope_active: bool
+    retrieval_top_score: float | None
+
 
     sql_repair_counts: dict     
     step_retry_counts: dict      

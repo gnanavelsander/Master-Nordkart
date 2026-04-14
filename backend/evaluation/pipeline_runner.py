@@ -41,6 +41,13 @@ from agent_graph import get_agent_graph
 from reporting import extract_agent_trace, _print_summary, _print_details, store_run
 from backend.logging_utils import setup_logging
 from backend.mcp.client.client import mcp_client
+from backend.mcp.client.tools_discovery import prefetch_databases
+from backend.embeddings.retrieve_layers import (
+    build_retrieval_context,
+    list_candidate_table_names,
+    retrieve_catalog_candidates,
+)
+from config import EMBEDDINGS_MIN_SCORE, EMBEDDINGS_TOP_K, EMBEDDINGS_TABLE_INDEX_PATH
 
 
 
@@ -55,6 +62,18 @@ _MAX_RETRY_DELAY_S = 120
 logger = logging.getLogger(__name__)
 
 
+def _candidate_database_order(candidates: list[dict]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in candidates:
+        database = str(item.get("database") or "").strip()
+        if not database or database in seen:
+            continue
+        seen.add(database)
+        ordered.append(database)
+    return ordered
+
+
 async def agent(
     user_input: str,
     model_id: str,
@@ -62,12 +81,63 @@ async def agent(
     prompt: str,
     attempt_number: int = 0,
 ) -> AgentResult:
+    retrieval_candidates: list[dict] = []
+    retrieval_context = ""
+    retrieval_scope_active = False
+    retrieval_top_score: float | None = None
+
+    try:
+        retrieval_candidates = retrieve_catalog_candidates(
+            user_input,
+            k=EMBEDDINGS_TOP_K,
+            index_path=EMBEDDINGS_TABLE_INDEX_PATH,
+        )
+        top_score = retrieval_candidates[0]["score"] if retrieval_candidates else -1.0
+        retrieval_top_score = top_score if retrieval_candidates else None
+        retrieval_scope_active = bool(retrieval_candidates) and top_score >= EMBEDDINGS_MIN_SCORE
+        retrieval_context = build_retrieval_context(retrieval_candidates)
+        if retrieval_context and not retrieval_scope_active:
+            retrieval_context += (
+                "\nFallback note: retrieval confidence is low, so broader discovery tools remain available."
+            )
+        logger.info(
+            "[RETRIEVAL][%s] candidates=%s scope_active=%s top_score=%.3f",
+            model_id,
+            [c.get("full_name") for c in retrieval_candidates],
+            retrieval_scope_active,
+            top_score,
+        )
+    except Exception as e:
+        logger.warning("[RETRIEVAL][%s] failed: %s", model_id, e)
+
+    seeded_databases = sorted(
+        {str(item.get("database") or "").strip() for item in retrieval_candidates if item.get("database")}
+    )
+    seeded_tables = list_candidate_table_names(retrieval_candidates)
+    preferred_databases = _candidate_database_order(retrieval_candidates)
+
+    if preferred_databases:
+        try:
+            prefetch_result = await prefetch_databases(preferred_databases)
+            logger.info(
+                "[RETRIEVAL][%s] prefetched_databases=%s",
+                model_id,
+                prefetch_result.get("opened", preferred_databases) if isinstance(prefetch_result, dict) else preferred_databases,
+            )
+        except Exception as e:
+            logger.warning("[RETRIEVAL][%s] database prefetch failed: %s", model_id, e)
+
+    msgs = [SystemMessage(content=prompt)]
+    if retrieval_context:
+        msgs.append(SystemMessage(content=retrieval_context))
+    msgs.append(HumanMessage(content=user_input))
+
     init_state: AgentState = {
         "user_input": user_input,
         "model_id": model_id,
         "prompt": prompt,
         "params": params,
-        "msgs": [SystemMessage(content=prompt), HumanMessage(content=user_input)],
+        "msgs": msgs,
         "iterations": 0,
         "max_iterations": params.max_iterations,
         "sql_repair_count": 0,
@@ -86,8 +156,8 @@ async def agent(
         "last_executed_result": None,
         "last_execute_ok": False,
         "last_execute_error": None,
-        "discovered_tables": [],
-        "discovered_databases": [],
+        "discovered_tables": seeded_tables,
+        "discovered_databases": seeded_databases,
         "valid_sql": False,
         "answer": "",
         "all_errors": [],
@@ -113,6 +183,9 @@ async def agent(
         "last_failed_step": None,
         "plan_locked": False,
         "locked_step_ids": set(),
+        "retrieval_candidates": retrieval_candidates,
+        "retrieval_scope_active": retrieval_scope_active,
+        "retrieval_top_score": retrieval_top_score,
 
 
         "sql_repair_counts": {},
@@ -249,6 +322,11 @@ async def _run_one_with_retry(
             "run_logs": [],
             "discovered_databases": [],
             "discovered_tables": [],
+            "retrieval": {
+                "scope_active": False,
+                "top_score": None,
+                "candidates": [],
+            },
             "last_validation_error": None,
             "last_guard_error": None,
             "last_execute_error": None,

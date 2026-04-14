@@ -23,21 +23,33 @@ async def app_lifespan(server):
     pool_manager = PoolManager()
     duck_path = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4().hex}.duckdb")
     conn_ids = {
-        "matrikkelenbygning":            await pool_manager.connect(PGCONN_MATRIKKEL),
-        "flomaktsomrader":               await pool_manager.connect(PGCONN_FLOMAKTSOMRADER),
-        "flomsoner":                     await pool_manager.connect(PGCONN_FLOMSONER),
-        "brannstasjoner":                await pool_manager.connect(PGCONN_BRANNSTASJONER),
-        "kvikkleire":                    await pool_manager.connect(PGCONN_KVIKKLEIRE),
-        "snoskredaktsomhetskart":        await pool_manager.connect(PGCONN_SNOSKREDAKTSOMHETSKART),
-        "matrikkeleneiendomskartteig":   await pool_manager.connect(PGCONN_MATRIKKELENEIENDOMSKARTTEIG),
-        "aktsomhetskart_jord_flomskred": await pool_manager.connect(PGCONN_AKTSOMHETSKART_JORD_FLOMSKRED),
-        "kommuner":                      await pool_manager.connect(PGCONN_KOMMUNER),
-
-        "fylker": await pool_manager.connect(PGCONN_FYLKER_GIS),
-        "statistiskrutenett1km": await pool_manager.connect(PGCONN_STATISTISKRUTENETT1KM_GIS),
-        "trafikkmengde": await pool_manager.connect(PGCONN_TRAFIKKMENGDE_GIS),
-        "stedsnavn": await pool_manager.connect(PGCONN_STEDSNAVN_GIS),
+        "matrikkelenbygning": "matrikkelenbygning",
+        "flomaktsomrader": "flomaktsomrader",
+        "flomsoner": "flomsoner",
+        "brannstasjoner": "brannstasjoner",
+        "kvikkleire": "kvikkleire",
+        "snoskredaktsomhetskart": "snoskredaktsomhetskart",
+        "matrikkeleneiendomskartteig": "matrikkeleneiendomskartteig",
+        "aktsomhetskart_jord_flomskred": "aktsomhetskart_jord_flomskred",
+        "kommuner": "kommuner",
+        "fylker": "fylker",
+        "statistiskrutenett1km": "statistiskrutenett1km",
+        "trafikkmengde": "trafikkmengde",
+        "stedsnavn": "stedsnavn",
     }
+    pool_manager.register("matrikkelenbygning", PGCONN_MATRIKKEL)
+    pool_manager.register("flomaktsomrader", PGCONN_FLOMAKTSOMRADER)
+    pool_manager.register("flomsoner", PGCONN_FLOMSONER)
+    pool_manager.register("brannstasjoner", PGCONN_BRANNSTASJONER)
+    pool_manager.register("kvikkleire", PGCONN_KVIKKLEIRE)
+    pool_manager.register("snoskredaktsomhetskart", PGCONN_SNOSKREDAKTSOMHETSKART)
+    pool_manager.register("matrikkeleneiendomskartteig", PGCONN_MATRIKKELENEIENDOMSKARTTEIG)
+    pool_manager.register("aktsomhetskart_jord_flomskred", PGCONN_AKTSOMHETSKART_JORD_FLOMSKRED)
+    pool_manager.register("kommuner", PGCONN_KOMMUNER)
+    pool_manager.register("fylker", PGCONN_FYLKER_GIS)
+    pool_manager.register("statistiskrutenett1km", PGCONN_STATISTISKRUTENETT1KM_GIS)
+    pool_manager.register("trafikkmengde", PGCONN_TRAFIKKMENGDE_GIS)
+    pool_manager.register("stedsnavn", PGCONN_STEDSNAVN_GIS)
     try:
         yield AppContext(db=pool_manager, conn_ids=conn_ids, step_results={}, duckdb_path=duck_path)
     finally:
