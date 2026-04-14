@@ -17,7 +17,7 @@ def embed_text(text: str) -> list[float]:
         return []
 
     response = client.embeddings.create(
-        model=AZURE_OPENAI_EMBEDDING_DEPLOYMENT,  # deployment name
+        model=AZURE_OPENAI_EMBEDDING_DEPLOYMENT, 
         input=text,
     )
     return response.data[0].embedding

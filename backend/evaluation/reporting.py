@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 from agent_models import EvalRun, PipelineResult, AgentTrace, AgentRunError
 from agent_helpers import (
+    _fallback_answer_from_logs,
     _build_step_outcomes,
     _collect_step_stats,
     _dedup,
@@ -31,6 +32,41 @@ from backend.storage.AzureBlobStorage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_retrieval_info(run_logs: list | None, fallback: dict | None = None) -> dict:
+    retrieval = dict(fallback or {})
+    logs = run_logs or []
+    if logs:
+        latest = logs[-1] or {}
+        latest_retrieval = latest.get("retrieval")
+        if isinstance(latest_retrieval, dict):
+            retrieval = dict(latest_retrieval)
+
+    return {
+        "scope_active": retrieval.get("scope_active", False),
+        "top_score": retrieval.get("top_score"),
+        "candidates": list(retrieval.get("candidates", [])),
+    }
+
+
+def _extract_plan_info(run_logs: list | None, fallback: dict | None = None) -> dict:
+    plan = dict(fallback or {})
+    logs = run_logs or []
+    if logs:
+        latest = logs[-1] or {}
+        if "plan_finalized" in latest:
+            plan = {
+                "plan_finalized": latest.get("plan_finalized", False),
+                "planned_steps": latest.get("planned_steps", {}),
+                "required_step_ids": latest.get("required_step_ids", []),
+            }
+
+    return {
+        "plan_finalized": bool(plan.get("plan_finalized", False)),
+        "planned_steps": dict(plan.get("planned_steps", {})),
+        "required_step_ids": list(plan.get("required_step_ids", [])),
+    }
 
 
 def _sorted_step_items(step_registry: dict) -> list[tuple]:
@@ -697,6 +733,18 @@ async def store_run(run: EvalRun, results: list) -> str:
         if isinstance(r, AgentRunError):
             snap = r.snapshot or {}
             tokens = snap.get("tokens", _empty_token_dict())
+            retrieval = _extract_retrieval_info(
+                snap.get("run_logs", []),
+                fallback=snap.get("retrieval"),
+            )
+            plan = _extract_plan_info(
+                snap.get("run_logs", []),
+                fallback={
+                    "plan_finalized": snap.get("plan_finalized", False),
+                    "planned_steps": snap.get("planned_steps", {}),
+                    "required_step_ids": snap.get("required_step_ids", []),
+                },
+            )
             trace = _extract_agent_trace_from_run_logs(
                 snap.get("run_logs", []),
                 snap.get("valid_sql", False),
@@ -716,6 +764,9 @@ async def store_run(run: EvalRun, results: list) -> str:
             task_completed = _task_completed_from_steps(
                 snap.get("run_logs", []),
                 task_completed_fallback=snap.get("task_completed", False),
+                final_answer=_fallback_answer_from_logs(snap.get("run_logs", [])),
+                required_step_ids=set(plan["required_step_ids"]),
+                plan_finalized=plan["plan_finalized"],
             )
             active_errors = _dedup(
                 _combine_active_errors(active_step_issues, snap.get("all_errors", []))
@@ -743,6 +794,12 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "total_tool_calls": trace.total_tool_calls,
                 "latency_s": None,
                 "tokens": tokens,
+                "retrieval_scope_active": retrieval["scope_active"],
+                "retrieval_top_score": retrieval["top_score"],
+                "retrieval_candidates": retrieval["candidates"],
+                "plan_finalized": plan["plan_finalized"],
+                "planned_steps": plan["planned_steps"],
+                "required_step_ids": plan["required_step_ids"],
                 "errors": active_errors,
                 "trace": asdict(trace),
                 "run_logs": snap.get("run_logs", []),
@@ -771,6 +828,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "total_tool_calls": trace.total_tool_calls,
                     "latency_s": None,
                     "total_tokens": tokens.get("total_tokens"),
+                    "retrieval_scope_active": retrieval["scope_active"],
+                    "retrieval_top_score": retrieval["top_score"],
                     "total_step_errors": metrics["total_step_errors"],
                     "blocked_calls": metrics["blocked_calls"],
                     "discovery_calls": metrics["discovery_calls"],
@@ -784,6 +843,8 @@ async def store_run(run: EvalRun, results: list) -> str:
         else:
             trace = extract_agent_trace(r)
             tokens = asdict(r.tokens) if r.tokens else _empty_token_dict()
+            retrieval = _extract_retrieval_info(r.run_logs or [])
+            plan = _extract_plan_info(r.run_logs or [])
             failed_summary = _failed_step_summary(r.run_logs or [])
             active_step_issues, recovered_step_issues = _step_issue_summaries(r.run_logs or [])
             metrics = _summary_metrics(r.run_logs or [], trace)
@@ -800,6 +861,9 @@ async def store_run(run: EvalRun, results: list) -> str:
             task_completed = _task_completed_from_steps(
                 r.run_logs or [],
                 task_completed_fallback=r.task_completed,
+                final_answer=(r.final_answer or _fallback_answer_from_logs(r.run_logs or [])),
+                required_step_ids=set(plan["required_step_ids"]),
+                plan_finalized=plan["plan_finalized"],
             )
             status = "completed" if task_completed else "incomplete"
             terminal_context = _build_terminal_context(r.run_logs or [], active_errors)
@@ -818,6 +882,12 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "restarts_used": r.restarts_used,
                 "latency_s": r.latency_s,
                 "tokens": tokens,
+                "retrieval_scope_active": retrieval["scope_active"],
+                "retrieval_top_score": retrieval["top_score"],
+                "retrieval_candidates": retrieval["candidates"],
+                "plan_finalized": plan["plan_finalized"],
+                "planned_steps": plan["planned_steps"],
+                "required_step_ids": plan["required_step_ids"],
                 "errors": active_errors,
                 "trace": asdict(trace),
                 "failed_step_summary": failed_summary,
@@ -848,6 +918,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "total_tool_calls": trace.total_tool_calls,
                     "latency_s": r.latency_s,
                     "total_tokens": tokens.get("total_tokens"),
+                    "retrieval_scope_active": retrieval["scope_active"],
+                    "retrieval_top_score": retrieval["top_score"],
                     "total_step_errors": metrics["total_step_errors"],
                     "blocked_calls": metrics["blocked_calls"],
                     "discovery_calls": metrics["discovery_calls"],

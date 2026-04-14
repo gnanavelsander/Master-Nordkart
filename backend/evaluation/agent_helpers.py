@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,28 @@ from agent_models import TokenUsage, AgentState
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+_PLAN_ACTIONS = (
+    "spatial_join",
+    "attribute_join",
+    "select_columns",
+    "transform_crs",
+    "intersection",
+    "difference",
+    "aggregate",
+    "dissolve",
+    "centroid",
+    "distance",
+    "nearest",
+    "buffer",
+    "filter",
+    "query",
+    "sort",
+    "limit",
+    "clip",
+    "union",
+)
 
 
 def load_prompt(name: str) -> str:
@@ -143,6 +166,83 @@ def _normalize_step_mapping(mapping: dict | None) -> dict:
     }
 
 
+def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
+    raw = (text or "").strip()
+    if not raw:
+        return {}, set()
+
+    lowered_raw = raw.lower()
+    plan_headers = (
+        "step list",
+        "plan:",
+        "execution plan",
+        "query mode:",
+        "my plan",
+        "here is my plan",
+        "steps:",
+        "approach:",
+        "following steps",
+        "task plan",
+        "query plan",
+    )
+    # Allow implicit plan: multiple "step N" lines even without an explicit header
+    has_header = any(header in lowered_raw for header in plan_headers)
+    has_implicit_plan = len(re.findall(r"\bstep\s*\d+\b", lowered_raw)) >= 2
+    if not has_header and not has_implicit_plan:
+        return {}, set()
+
+    _SECTION_HEADERS = (
+        "step list", "execution plan", "plan:",
+        "steps:", "my plan", "approach:", "following steps", "task plan", "query plan",
+    )
+
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    planned_steps: dict = {}
+    in_step_section = False
+
+    for line in lines:
+        lower = line.lower()
+        if any(header in lower for header in _SECTION_HEADERS):
+            in_step_section = True
+            continue
+        if in_step_section and (
+            "limit placement" in lower
+            or "data volume estimate" in lower
+            or "query mode" in lower
+        ):
+            continue
+        if not in_step_section and not lower.startswith("step "):
+            continue
+
+        step_match = re.search(r"\bstep\s*(\d+)\b", lower)
+        if not step_match:
+            numbered_match = re.match(r"^(\d+)\.\s+", lower)
+            if numbered_match:
+                step_no = int(numbered_match.group(1))
+            else:
+                continue
+        else:
+            step_no = int(step_match.group(1))
+
+        action = None
+        for candidate in _PLAN_ACTIONS:
+            if candidate in lower:
+                action = candidate
+                break
+
+        if action is None:
+            continue
+
+        planned_steps[step_no] = {
+            "step": step_no,
+            "action": action,
+            "description": line,
+        }
+
+    required_step_ids = set(planned_steps.keys())
+    return planned_steps, required_step_ids
+
+
 def _collect_step_stats(run_logs: list | None) -> tuple[dict, dict, dict]:
     step_registry = {}
     sql_repairs_by_step = {}
@@ -202,14 +302,87 @@ def _executed_from_steps(
     return any(step.get("executed", False) for step in outcomes)
 
 
+def _answer_indicates_incomplete_task(answer: str | None) -> bool:
+    text = (answer or "").strip().lower()
+    if not text:
+        return False
+
+    incomplete_markers = (
+        "can proceed to the next step",
+        "can proceed to next step",
+        "can proceed to the next steps",
+        "can proceed to next steps",
+        "next step would be",
+        "next steps would be",
+        "next i would",
+        "i can now proceed",
+        "i can proceed",
+        "we can proceed",
+        "the next step is",
+        "the next steps are",
+        "still need to",
+        "need to run",
+        "need to query",
+        "need to perform",
+        "then run",
+        "then perform the spatial join",
+        "hazard query still",
+        "have not yet",
+        "haven't yet",
+        "not yet run",
+        "not yet performed",
+    )
+    return any(marker in text for marker in incomplete_markers)
+
+
 def _task_completed_from_steps(
     run_logs: list | None,
     task_completed_fallback: bool = False,
+    final_answer: str | None = None,
+    required_step_ids: set | list | None = None,
+    plan_finalized: bool = False,
 ) -> bool:
+    required_ids = {
+        _normalize_step_key(step_id)
+        for step_id in (required_step_ids or [])
+    }
     outcomes = _build_step_outcomes(run_logs)
     if not outcomes:
-        return task_completed_fallback
-    return all(step.get("executed", False) and step.get("status") == "ok" for step in outcomes)
+        return (
+            task_completed_fallback
+            and not required_ids
+            and not plan_finalized
+            and not _answer_indicates_incomplete_task(final_answer)
+        )
+
+    if plan_finalized and not required_ids:
+        return False
+
+    if not required_ids:
+        return False
+
+    outcome_by_step = {
+        _normalize_step_key(step.get("step")): step
+        for step in outcomes
+        if step.get("step") is not None
+    }
+
+    if required_ids:
+        for step_id in required_ids:
+            outcome = outcome_by_step.get(step_id)
+            if not outcome:
+                return False
+            if not outcome.get("executed", False) or outcome.get("status") != "ok":
+                return False
+
+    steps_ok = all(step.get("executed", False) and step.get("status") == "ok" for step in outcomes)
+    if not steps_ok:
+        return False
+
+    if _answer_indicates_incomplete_task(final_answer):
+        return False
+
+    return True
 
 
 def _render_final_sql(
@@ -294,6 +467,12 @@ def _run_log_entry_from_state(state: "AgentState") -> dict:
     return {
         "attempt_number": state.get("attempt_number", 0),
         "run_index": state.get("restart_count", 0),
+        "plan_finalized": state.get("plan_finalized", False),
+        "planned_steps": _normalize_step_mapping(state.get("planned_steps", {})),
+        "required_step_ids": sorted(
+            _normalize_step_key(step_id)
+            for step_id in set(state.get("required_step_ids", set()))
+        ),
         "retrieval": {
             "scope_active": state.get("retrieval_scope_active", False),
             "top_score": state.get("retrieval_top_score"),
@@ -356,6 +535,9 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
     task_completed = _task_completed_from_steps(
         run_logs,
         task_completed_fallback=state.get("task_completed", False),
+        final_answer=state.get("answer") or _fallback_answer_from_logs(run_logs),
+        required_step_ids=set(state.get("required_step_ids", set())),
+        plan_finalized=state.get("plan_finalized", False),
     )
 
     steps = state.get("step_registry", {})
@@ -367,6 +549,12 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
 
     return {
         "model_id": state.get("model_id"),
+        "plan_finalized": state.get("plan_finalized", False),
+        "planned_steps": _normalize_step_mapping(state.get("planned_steps", {})),
+        "required_step_ids": sorted(
+            _normalize_step_key(step_id)
+            for step_id in set(state.get("required_step_ids", set()))
+        ),
         "retrieval": {
             "scope_active": state.get("retrieval_scope_active", False),
             "top_score": state.get("retrieval_top_score"),
@@ -443,6 +631,16 @@ def _accumulate_retry_snapshots(base: dict | None, new: dict | None) -> dict:
         ),
         "candidates": list(new_retrieval.get("candidates") or base_retrieval.get("candidates") or []),
     }
+    merged["plan_finalized"] = bool(new.get("plan_finalized", base.get("plan_finalized", False)))
+    merged["planned_steps"] = _normalize_step_mapping(
+        new.get("planned_steps") or base.get("planned_steps") or {}
+    )
+    merged["required_step_ids"] = sorted(
+        {
+            _normalize_step_key(step_id)
+            for step_id in list(base.get("required_step_ids", [])) + list(new.get("required_step_ids", []))
+        }
+    )
     merged["final_sql"] = new.get("final_sql") or base.get("final_sql")
     merged["last_validation_error"] = (
         new.get("last_validation_error") or base.get("last_validation_error")

@@ -45,7 +45,7 @@ from backend.mcp.client.tools_discovery import prefetch_databases
 from backend.embeddings.retrieve_layers import (
     build_retrieval_context,
     list_candidate_table_names,
-    retrieve_catalog_candidates,
+    retrieve_database_candidates,
 )
 from config import EMBEDDINGS_MIN_SCORE, EMBEDDINGS_TOP_K, EMBEDDINGS_TABLE_INDEX_PATH
 
@@ -87,7 +87,7 @@ async def agent(
     retrieval_top_score: float | None = None
 
     try:
-        retrieval_candidates = retrieve_catalog_candidates(
+        retrieval_candidates = retrieve_database_candidates(
             user_input,
             k=EMBEDDINGS_TOP_K,
             index_path=EMBEDDINGS_TABLE_INDEX_PATH,
@@ -174,6 +174,9 @@ async def agent(
         "validated_sqls": {},
         "query_mode": None,
         "step_registry": {},
+        "planned_steps": {},
+        "required_step_ids": set(),
+        "plan_finalized": False,
         "iter_had_error": False,
         "iter_had_validation_error": False,
         "iter_any_exec_ok": False,
@@ -189,7 +192,9 @@ async def agent(
 
 
         "sql_repair_counts": {},
-
+        "needs_replan": False,
+        "zero_rows_step": None,
+        "replan_count": 0,
     }
 
     state = init_state
@@ -230,6 +235,9 @@ async def agent(
     task_completed = _task_completed_from_steps(
         run_logs,
         task_completed_fallback=state.get("task_completed", False),
+        final_answer=state.get("answer"),
+        required_step_ids=set(state.get("required_step_ids", set())),
+        plan_finalized=state.get("plan_finalized", False),
     )
     final_sql = _render_final_sql(
         steps,
@@ -322,6 +330,9 @@ async def _run_one_with_retry(
             "run_logs": [],
             "discovered_databases": [],
             "discovered_tables": [],
+            "plan_finalized": False,
+            "planned_steps": {},
+            "required_step_ids": [],
             "retrieval": {
                 "scope_active": False,
                 "top_score": None,
@@ -421,10 +432,10 @@ async def main():
 
     queries = [
   
-        "Count buildings located in flood hazard areas in Kristiansand.",
+                "Count the number of buildings per municipality.",
     ]
 
-    model_ids = ["gpt-5-mini", "Mistral-Large-3"]
+    model_ids = ["gpt-5-mini"]
 
     params = ModelParams(
         temperature=0.0,

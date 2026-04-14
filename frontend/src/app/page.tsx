@@ -20,7 +20,6 @@ export default function Page() {
   const [lastResult, setLastResult] = useState<any>(null);
   const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics" | "errors">("sql");
 
-  const [errors, setErrors] = useState<string[]>([]);
 
 
 
@@ -73,10 +72,6 @@ export default function Page() {
 
       setLastResult(data.results);
 
-      setErrors(
-  data.results.flatMap((r: any) => r.all_errors ?? [])
-);      
-
       // get best model
       const best = data.results.find((r: any)=>r.model_id === data.best_model)
 
@@ -92,8 +87,8 @@ export default function Page() {
         {
           role: "agent",
           text: best
-            ? `Results found. Best model: ${best.model_id} (${best.latency_s}s, ${best.attempts} forsøk)`
-            : "No model was able to generate valid SQL.",
+            ? `Results found. Best model: ${best.model_id} (${best.latency_s}s, ${best.iterations} iterations)`
+            : "No model was able to complete the task.",
           results: data.results,
         },
       ]);
@@ -111,8 +106,19 @@ export default function Page() {
 
 
 
-  const ALL_MODELS = ["gpt-35-turbo", "gpt-4.1-nano", "gpt-4", "gpt-4o", "GPT-4o-mini"];
-  const [selectedModels, setSelectedModels] = useState<string[]>(["gpt-35-turbo", "gpt-4.1-nano", "gpt-4", "gpt-4o", "GPT-4o-mini"]);
+  const [ALL_MODELS, setAllModels] = useState<string[]>([]);
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch("http://localhost:8000/models")
+      .then((r) => r.json())
+      .then((data) => {
+        const models: string[] = data.models ?? [];
+        setAllModels(models);
+        setSelectedModels(models.slice(0, 3));
+      })
+      .catch(() => {});
+  }, []);
 
   const modelLength = selectedModels.length;
 
@@ -133,24 +139,9 @@ const [tableData, setTableData] = useState<any[]>([]);
 const [tableModelName, setTableModelName] = useState<string>("");
 
 // show tael function
-async function showTable(r: any) {
-    // always fetch — don't rely on cache
-    const res = await fetch("http://localhost:8000/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sql: r.sql }),
-    });
-
-    const data = await res.json();
-
-    if (data.error) {
-        console.error("execute error:", data.error);
-        return;
-    }
-
-    r.rows = data.rows;
-    setLastResult((prev: any) => [...prev]);
-    setTableData(data.rows);
+function showTable(r: any) {
+    const rows = r.result_data?.rows ?? [];
+    setTableData(rows);
     setTableModelName(r.model_id);
     setLeftView("table");
 }
@@ -246,31 +237,22 @@ async function showTable(r: any) {
         <tr className="border-b border-gray-700">
           <th className="text-left py-1 text-orange-400 font-mono">Modell</th>
           <th className="text-left py-1 text-cyan-400 font-mono">Valid</th>
-          <th className="text-left py-1 text-cyan-400 font-mono">Attempts</th>
+          <th className="text-left py-1 text-cyan-400 font-mono">Iter</th>
           <th className="text-left py-1 text-cyan-400 font-mono">Latency</th>
-          <th className="text-left py-1 text-cyan-400 font-mono">First-pass</th>
-
-
-
+          <th className="text-left py-1 text-cyan-400 font-mono">Done</th>
         </tr>
       </thead>
       <tbody>
         {msg.results.map((r: any) => (
           <tr key={r.model_id} className="border-b border-gray-800">
             <td className="py-1 text-orange-300 font-mono">{r.model_id}</td>
-            <td className={`py-1 font-mono ${r.valid ? "text-green-400" : "text-red-400"}`}>
-              {r.valid ? "Yes" : "No"}
+            <td className={`py-1 font-mono ${r.valid_sql ? "text-green-400" : "text-red-400"}`}>
+              {r.valid_sql ? "Yes" : "No"}
             </td>
-            <td className={`py-1 font-mono ${
-              r.attempts === 1 ? "text-green-400" :
-              r.attempts === 2 ? "text-yellow-400" :
-              "text-red-400"
-            }`}>
-              {r.attempts}
-            </td>
+            <td className="py-1 text-cyan-300 font-mono">{r.iterations}</td>
             <td className="py-1 text-cyan-300 font-mono">{r.latency_s}s</td>
-            <td className="py-1 text-cyan-300 font-mono">
-              {r.attempts === 1 ? "Yes" : "No"}
+            <td className={`py-1 font-mono ${r.task_completed ? "text-green-400" : "text-gray-500"}`}>
+              {r.task_completed ? "Yes" : "No"}
             </td>
       
 
@@ -400,20 +382,28 @@ async function showTable(r: any) {
                         {r.model_id}
                       </h3>
                       <div className="flex items-center gap-2 text-xs text-gray-400">
-                        <span>{r.attempts} forsøk</span>
+                        <span>{r.iterations} iter</span>
                         <span>{r.latency_s}s</span>
+                        {r.task_completed && <span className="text-green-400">✓</span>}
                       </div>
                     </div>
+
+                    {/* Final answer */}
+                    {r.final_answer && (
+                      <p className="text-xs text-cyan-300 italic border-l-2 border-cyan-700 pl-2">
+                        {r.final_answer}
+                      </p>
+                    )}
 
                  {/* SQL */}
 <div className="overflow-hidden">
   <pre className="text-xs text-white whitespace-pre-wrap break-words w-full">
-    {r.sql || r.all_errors?.join("\n")}
+    {r.final_sql || r.all_errors?.join("\n")}
   </pre>
 </div>
 
                     {/* knapper */}
-                    {r.valid && (
+                    {(r.executed || r.valid_sql) && (
                       <div className="flex gap-2 mt-1">
                         <button
                           onClick={() => showOnMap(r)}
@@ -458,35 +448,31 @@ async function showTable(r: any) {
 
        {rightTab === "metrics" && (
   <div className="space-y-4">
-
-    {/* comparison table — current run */}
-
-
-    {/* aggregated per model */}
     {lastResult?.map((r: any) => (
-      r.aggregated && r.aggregated.total > 1 && (
-        <div key={r.model_id} className="border border-gray-700 rounded-xl p-4">
-          <h3 className="text-xs font-semibold text-green-400 mb-3">
-            {r.model_id} — aggregated ({r.aggregated.total} runs)
-          </h3>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="text-gray-400">First-pass</div>
-            <div className="text-cyan-300 font-mono">
-              {((r.aggregated.first_pass / r.aggregated.total) * 100).toFixed(1)}%
-            </div>
-            <div className="text-gray-400">Repaired</div>
-            <div className="text-cyan-300 font-mono">
-              {((r.aggregated.repaired / r.aggregated.total) * 100).toFixed(1)}%
-            </div>
-            <div className="text-gray-400">Avg latency</div>
-            <div className="text-cyan-300 font-mono">
-              {(r.aggregated.total_latency / r.aggregated.total).toFixed(2)}s
-            </div>
+      <div key={r.model_id} className="border border-gray-700 rounded-xl p-4">
+        <h3 className="text-xs font-semibold text-green-400 mb-3">{r.model_id}</h3>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="text-gray-400">Task completed</div>
+          <div className={`font-mono ${r.task_completed ? "text-green-400" : "text-red-400"}`}>
+            {r.task_completed ? "Yes" : "No"}
           </div>
+          <div className="text-gray-400">Valid SQL</div>
+          <div className={`font-mono ${r.valid_sql ? "text-green-400" : "text-red-400"}`}>
+            {r.valid_sql ? "Yes" : "No"}
+          </div>
+          <div className="text-gray-400">Executed</div>
+          <div className={`font-mono ${r.executed ? "text-green-400" : "text-gray-500"}`}>
+            {r.executed ? "Yes" : "No"}
+          </div>
+          <div className="text-gray-400">Iterations</div>
+          <div className="text-cyan-300 font-mono">{r.iterations}</div>
+          <div className="text-gray-400">SQL repairs</div>
+          <div className="text-cyan-300 font-mono">{r.sql_repairs_used}</div>
+          <div className="text-gray-400">Latency</div>
+          <div className="text-cyan-300 font-mono">{r.latency_s}s</div>
         </div>
-      )
+      </div>
     ))}
-
   </div>
 )}
 

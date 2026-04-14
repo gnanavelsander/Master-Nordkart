@@ -40,6 +40,7 @@ class ModelParams:
     reasoning_effort: str | None = None
 
     max_step_retries: int = 3
+    max_replans: int = 1
 
 
 @dataclass
@@ -170,6 +171,9 @@ class AgentState(TypedDict, total=False):
    
     step_registry: dict           
     validated_sqls: dict           
+    planned_steps: dict
+    required_step_ids: set
+    plan_finalized: bool
  
     iter_had_error: bool
     iter_had_validation_error: bool
@@ -190,8 +194,12 @@ class AgentState(TypedDict, total=False):
     retrieval_top_score: float | None
 
 
-    sql_repair_counts: dict     
-    step_retry_counts: dict      
+    sql_repair_counts: dict
+    step_retry_counts: dict
+
+    needs_replan: bool
+    zero_rows_step: Optional[int]
+    replan_count: int
 
 
 

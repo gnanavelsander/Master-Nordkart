@@ -21,10 +21,12 @@ from config import (
 from agent_models import AgentState, ModelParams, AgentRunError
 from agent_helpers import (
     _add_tokens,
+    _answer_indicates_incomplete_task,
     _build_snapshot,
     _dedup,
     _empty_token_dict,
     _executed_from_steps,
+    _extract_plan_from_text,
     _extract_tokens,
     _fallback_answer_from_logs,
     _format_restart_summary,
@@ -48,22 +50,6 @@ logger = logging.getLogger(__name__)
 
 
 _AGENT_GRAPH = None
-
-
-def _answer_looks_complete(answer: str) -> bool:
-    text = (answer or "").strip().lower()
-    if not text:
-        return False
-
-    incomplete_markers = (
-        "would you like",
-        "if you want",
-        "i can provide",
-        "i can also provide",
-        "do you want",
-        "let me know if you want",
-    )
-    return not any(marker in text for marker in incomplete_markers)
 
 
 
@@ -219,6 +205,13 @@ async def _model_node(state: AgentState) -> AgentState:
     state["total_iterations"] = state.get("total_iterations", 0) + 1
     state["current_ai_is_final_answer"] = not bool(ai.tool_calls)
 
+    if not state.get("plan_finalized", False):
+        planned_steps, required_step_ids = _extract_plan_from_text((ai.content or "").strip())
+        if planned_steps:
+            state["planned_steps"] = planned_steps
+            state["required_step_ids"] = required_step_ids
+            state["plan_finalized"] = True
+
     run_log = list(state.get("current_run_log", []))
     run_log.append({
         "iteration": state["iterations"],
@@ -329,6 +322,9 @@ def _restart_or_finish_node(state: AgentState) -> AgentState:
         "answer_based_on_result": False,
         "validated_sqls": {},
         "step_registry": {},
+        "planned_steps": {},
+        "required_step_ids": set(),
+        "plan_finalized": False,
         "iter_had_error": False,
         "iter_had_validation_error": False,
         "iter_any_exec_ok": False,
@@ -387,13 +383,14 @@ def _finalize_node(state: AgentState) -> AgentState:
     has_result = state.get("last_executed_result") is not None
 
     has_answer = bool(current_answer)
-    answer_complete = _answer_looks_complete(current_answer)
+    answer_complete = not _answer_indicates_incomplete_task(current_answer)
 
     step_valid_sql = _valid_sql_from_steps(run_logs, valid_sql_fallback=all_validated)
     step_executed = _executed_from_steps(run_logs, executed_fallback=any_executed or all_executed)
     step_task_completed = _task_completed_from_steps(
         run_logs,
         task_completed_fallback=all_executed,
+        final_answer=current_answer,
     )
 
     if not step_task_completed:
@@ -434,7 +431,89 @@ def _route_after_model(state: AgentState) -> str:
 
 
 
+def _replan_node(state: AgentState) -> AgentState:
+    zero_rows_step = state.get("zero_rows_step")
+    step_registry = dict(state.get("step_registry", {}))
+
+    completed_lines = []
+    for k, v in sorted(
+        step_registry.items(),
+        key=lambda x: int(str(x[0])) if str(x[0]).isdigit() else 0,
+    ):
+        rows = v.get("rows_returned")
+        if v.get("executed"):
+            row_note = f"executed — {rows} rows" if rows is not None else "executed"
+        elif v.get("validated"):
+            row_note = "validated (not yet executed)"
+        else:
+            row_note = "pending"
+        completed_lines.append(f"  Step {k}: {v.get('action', '?')} — {row_note}")
+
+    replan_msg = f"""Step {zero_rows_step} executed successfully but returned 0 rows.
+
+Original query:
+{state.get("user_input", "")}
+
+Progress so far:
+{chr(10).join(completed_lines) if completed_lines else "  (none)"}
+
+The remaining planned steps cannot proceed as originally planned because they depend on step {zero_rows_step}'s result.
+
+Produce a new numbered plan before calling any tools. Options:
+1. Revise the step {zero_rows_step} query — fix the filter, check spelling variants, try kommunenummer instead of kommunenavn
+2. Accept that no results were found and provide a final answer explaining why
+3. Use a different approach entirely
+
+Do not repeat the exact same queries that already returned 0 rows.""".strip()
+
+    all_run_logs = list(state.get("all_run_logs", []))
+    if state.get("current_run_log"):
+        new_entry = _run_log_entry_from_state(state)
+        new_key = _log_entry_key(new_entry)
+        if not any(_log_entry_key(r) == new_key for r in all_run_logs):
+            all_run_logs.append(new_entry)
+
+    new_state = {
+        **state,
+        "msgs": [
+            SystemMessage(content=state["prompt"]),
+            HumanMessage(content=replan_msg),
+        ],
+        "plan_finalized": False,
+        "planned_steps": {},
+        "required_step_ids": set(),
+        "step_registry": {},
+        "locked_step_ids": set(),
+        "validated_sqls": {},
+        "needs_replan": False,
+        "zero_rows_step": None,
+        "replan_count": state.get("replan_count", 0) + 1,
+        "current_ai_is_final_answer": False,
+        "iter_had_error": False,
+        "iter_had_validation_error": False,
+        "iter_any_exec_ok": False,
+        "last_validation_ok": False,
+        "last_validation_error": None,
+        "last_guard_error": None,
+        "last_execute_error": None,
+        "last_execute_ok": False,
+        "last_sql": None,
+        "last_validated_sql": None,
+        "current_run_log": [],
+        "all_run_logs": all_run_logs,
+    }
+    new_state["crash_snapshot"] = _build_snapshot(new_state)
+    return new_state
+
+
 def _route_after_tools(state: AgentState) -> str:
+    # Replan takes priority — a step returned 0 rows with required steps remaining
+    if state.get("needs_replan"):
+        max_replans = getattr(state.get("params"), "max_replans", 1)
+        if state.get("replan_count", 0) < max_replans:
+            return "replan"
+        return "restart_or_finish"
+
     iter_had_error = state.get("iter_had_error", False)
     iter_had_validation_error = state.get("iter_had_validation_error", False)
     iter_any_exec_ok = state.get("iter_any_exec_ok", False)
@@ -506,6 +585,7 @@ def _build_agent_graph():
     graph.add_node("tools", _tools_node)
     graph.add_node("sql_repair", _sql_repair_node)
     graph.add_node("restart_or_finish", _restart_or_finish_node)
+    graph.add_node("replan", _replan_node)
     graph.add_node("finalize", _finalize_node)
 
     graph.set_entry_point("model")
@@ -518,8 +598,9 @@ def _build_agent_graph():
     graph.add_conditional_edges(
         "tools", _route_after_tools,
         {"model": "model", "sql_repair": "sql_repair",
-         "restart_or_finish": "restart_or_finish", "finalize": "finalize"},
+         "restart_or_finish": "restart_or_finish", "replan": "replan", "finalize": "finalize"},
     )
+    graph.add_edge("replan", "model")
     graph.add_edge("sql_repair", "model")
     graph.add_conditional_edges(
         "restart_or_finish", _route_after_restart_or_finish,

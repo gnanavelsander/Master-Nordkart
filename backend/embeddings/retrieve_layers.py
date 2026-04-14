@@ -174,6 +174,38 @@ def _normalize_candidate(item: dict[str, Any], score: float) -> dict[str, Any]:
     }
 
 
+def _group_candidates_by_database(
+    table_candidates: list[dict[str, Any]],
+    per_database_table_limit: int = 3,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for item in table_candidates:
+        database = str(item.get("database") or "").strip()
+        if not database:
+            continue
+
+        group = grouped.setdefault(
+            database,
+            {
+                "database": database,
+                "database_description": str(item.get("database_description") or "").strip(),
+                "score": -1.0,
+                "supporting_tables": [],
+            },
+        )
+
+        group["score"] = max(group["score"], float(item.get("score", -1.0)))
+        if not group["database_description"] and item.get("database_description"):
+            group["database_description"] = str(item.get("database_description") or "").strip()
+
+        if len(group["supporting_tables"]) < per_database_table_limit:
+            group["supporting_tables"].append(item)
+
+    ordered = sorted(grouped.values(), key=lambda x: x["score"], reverse=True)
+    return ordered
+
+
 @lru_cache(maxsize=4)
 def load_index(path: str | None = None) -> list[dict]:
     index_path = Path(path) if path else _DEFAULT_INDEX_PATH
@@ -199,6 +231,26 @@ def retrieve_catalog_candidates(
     return scored[:k]
 
 
+def retrieve_database_candidates(
+    user_text: str,
+    k: int = 5,
+    index_path: str | None = None,
+    table_pool_size: int | None = None,
+    per_database_table_limit: int = 3,
+) -> list[dict[str, Any]]:
+    table_pool_size = table_pool_size or max(k * 4, 12)
+    table_candidates = retrieve_catalog_candidates(
+        user_text,
+        k=table_pool_size,
+        index_path=index_path,
+    )
+    database_candidates = _group_candidates_by_database(
+        table_candidates,
+        per_database_table_limit=per_database_table_limit,
+    )
+    return database_candidates[:k]
+
+
 def format_table_context(top_tables: list[dict[str, Any]]) -> str:
     return build_retrieval_context(top_tables)
 
@@ -208,27 +260,12 @@ def build_retrieval_context(candidates: list[dict[str, Any]]) -> str:
         return ""
 
     lines = [
-        "Pre-retrieved catalog candidates:",
-        "Use these databases, schemas, and tables first before broader catalog discovery.",
+        "Pre-retrieved database candidates:",
+        "Use these databases first, then decide whether the task is single_db or multi_db.",
     ]
 
     for item in candidates:
-        column_bits = ", ".join(
-            f"{col['name']} ({col.get('type', '')})"
-            for col in item.get("selected_columns", [])[:8]
-        )
-        extras: list[str] = []
-        if item.get("geometry_column"):
-            extras.append(f"geometry={item['geometry_column']}")
-        if column_bits:
-            extras.append(f"columns={column_bits}")
-        if item.get("description"):
-            extras.append(f"description={item['description']}")
-
-        suffix = f" | {'; '.join(extras)}" if extras else ""
-        lines.append(
-            f"- {item['database']}.{item['schema']}.{item['table']} (score={item['score']:.3f}){suffix}"
-        )
+        lines.append(f"- {item['database']} (score={item['score']:.3f})")
 
     return "\n".join(lines)
 
@@ -240,26 +277,28 @@ def build_filtered_catalog(
 ) -> dict[str, Any]:
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
-    for item in candidates:
-        db = item.get("database")
-        schema = item.get("schema")
+    for db_candidate in candidates:
+        db = db_candidate.get("database")
         if database_name and db != database_name:
             continue
-        if schema_name and schema != schema_name:
-            continue
 
-        grouped.setdefault((db, schema), []).append(
-            {
-                "table": item.get("table"),
-                "geometry_columns": (
-                    [{"column_name": item["geometry_column"]}]
-                    if item.get("geometry_column") else []
-                ),
-                "recommended_geometry_column": item.get("geometry_column"),
-                "selected_columns": item.get("selected_columns", []),
-                "description": item.get("description", ""),
-            }
-        )
+        for item in db_candidate.get("supporting_tables", []):
+            schema = item.get("schema")
+            if schema_name and schema != schema_name:
+                continue
+
+            grouped.setdefault((db, schema), []).append(
+                {
+                    "table": item.get("table"),
+                    "geometry_columns": (
+                        [{"column_name": item["geometry_column"]}]
+                        if item.get("geometry_column") else []
+                    ),
+                    "recommended_geometry_column": item.get("geometry_column"),
+                    "selected_columns": item.get("selected_columns", []),
+                    "description": item.get("description", ""),
+                }
+            )
 
     databases: list[dict[str, Any]] = []
     by_db: dict[str, dict[str, list[dict[str, Any]]]] = {}
@@ -293,26 +332,29 @@ def is_candidate_in_scope(
     table_name: str,
 ) -> bool:
     for item in candidates:
-        if (
-            item.get("database") == database_name
-            and item.get("schema") == schema_name
-            and item.get("table") == table_name
-        ):
+        if item.get("database") == database_name:
             return True
     return False
 
 
 def list_candidate_full_names(candidates: list[dict[str, Any]]) -> list[str]:
-    return [str(item.get("full_name") or "") for item in candidates if item.get("full_name")]
+    names: list[str] = []
+    for item in candidates:
+        for table in item.get("supporting_tables", []):
+            full_name = str(table.get("full_name") or "")
+            if full_name:
+                names.append(full_name)
+    return names
 
 
 def list_candidate_table_names(candidates: list[dict[str, Any]]) -> list[str]:
     seen: set[str] = set()
     tables: list[str] = []
     for item in candidates:
-        table = str(item.get("table") or "").strip()
-        if not table or table in seen:
-            continue
-        seen.add(table)
-        tables.append(table)
+        for table_item in item.get("supporting_tables", []):
+            table = str(table_item.get("table") or "").strip()
+            if not table or table in seen:
+                continue
+            seen.add(table)
+            tables.append(table)
     return tables

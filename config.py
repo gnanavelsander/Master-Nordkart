@@ -92,14 +92,51 @@ AZURE_OPENAI_MODEL_IDS = {
 
 
 AZURE_FOUNDRY_MODEL_IDS = set(AZURE_MODEL_DEPLOYMENT.keys()) - AZURE_OPENAI_MODEL_IDS
-ALL_MODELS = list(AZURE_MODEL_DEPLOYMENT.keys())
+
+
+
+
+
+
+
+
+
+# ALL_MODELS = list(AZURE_MODEL_DEPLOYMENT.keys())
+
+
+
+
+
+
+
+
+ALL_MODELS = ["Mistral-Large-3", "gpt-5-mini"]
+
+
+
+
+
+
+
+
+
+
 
 AZURE_OPENAI_EMBEDDING_DEPLOYMENT = os.getenv(
     "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large"
 )
 
-EMBEDDINGS_TOP_K = int(os.getenv("EMBEDDINGS_TOP_K", "8"))
+EMBEDDINGS_TOP_K = int(os.getenv("EMBEDDINGS_TOP_K", "5"))
+
+
+
+
+
 EMBEDDINGS_MIN_SCORE = float(os.getenv("EMBEDDINGS_MIN_SCORE", "0.20"))
+
+
+
+
 EMBEDDINGS_TABLE_INDEX_PATH = os.getenv(
     "EMBEDDINGS_TABLE_INDEX_PATH",
     str(Path(__file__).resolve().parent / "backend" / "embeddings" / "table_index.json"),

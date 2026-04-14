@@ -38,6 +38,9 @@ from backend.tools.langchain_tools import (
     tool_get_table_schema,
     tool_get_database_catalog,
     tool_validate_sql,
+
+
+    
     tool_execute_query_step,
     tool_execute_filter_step,
     tool_execute_select_columns_step,
@@ -250,6 +253,14 @@ def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
     if step_number is None:
         return None
 
+    if not state.get("plan_finalized", False):
+        return _block_step_result(
+            "tool_validate_sql",
+            "Planning is required before validation. First produce an explicit numbered plan for the task.",
+            step_number,
+            "query",
+        )
+
     step_registry = dict(state.get("step_registry", {}))
     prev = dict(step_registry.get(step_number, {}))
 
@@ -316,7 +327,20 @@ def _guard_step_tool(
     prev_payload = prev.get("step_payload") if isinstance(prev.get("step_payload"), dict) else {}
     prev_action = prev_payload.get("action") or prev.get("action")
 
-    if step_number in set(state.get("locked_step_ids", set())):
+    required_step_ids = {
+        str(step_id) for step_id in set(state.get("required_step_ids", set()))
+    }
+
+    if not state.get("plan_finalized", False):
+        blocked_reason = (
+            "Planning is required before execution. First produce an explicit numbered plan for the task."
+        )
+    elif step_number is not None and required_step_ids and str(step_number) not in required_step_ids:
+        blocked_reason = (
+            f"Step {step_number} is not part of the finalized plan. "
+            "Execute only planned step numbers."
+        )
+    elif step_number in set(state.get("locked_step_ids", set())):
         blocked_reason = (
             f"Step {step_number} is locked after a successful validation/execution and cannot be changed."
         )
@@ -765,11 +789,14 @@ def _run_retrieval_scoped_discovery_tool(
 
     if name == "tool_get_available_schemas":
         database_name = str(args.get("databaseName") or "").strip()
+        # retrieval_candidates are DB-level objects; schema lives on supporting_tables items
         schemas = sorted(
             {
-                str(item.get("schema") or "").strip()
-                for item in retrieval_candidates
-                if item.get("database") == database_name and item.get("schema")
+                str(table_item.get("schema") or "").strip()
+                for db_candidate in retrieval_candidates
+                if db_candidate.get("database") == database_name
+                for table_item in db_candidate.get("supporting_tables", [])
+                if table_item.get("schema")
             }
         )
         return json.dumps(
@@ -780,13 +807,14 @@ def _run_retrieval_scoped_discovery_tool(
     if name == "tool_get_available_tables":
         database_name = str(args.get("databaseName") or "").strip()
         schema_name = str(args.get("schemaName") or "").strip()
+        # retrieval_candidates are DB-level objects; table lives on supporting_tables items
         tables = sorted(
             {
-                str(item.get("table") or "").strip()
-                for item in retrieval_candidates
-                if item.get("database") == database_name
-                and item.get("schema") == schema_name
-                and item.get("table")
+                str(table_item.get("table") or "").strip()
+                for db_candidate in retrieval_candidates
+                if db_candidate.get("database") == database_name
+                for table_item in db_candidate.get("supporting_tables", [])
+                if table_item.get("schema") == schema_name and table_item.get("table")
             }
         )
         return json.dumps(
@@ -835,6 +863,33 @@ def _run_retrieval_scoped_discovery_tool(
             )
 
     return None
+
+
+def _freeze_discovery_after_plan(state: "AgentState", name: str) -> str | None:
+    if not state.get("plan_finalized", False):
+        return None
+
+    discovery_tools = {
+        "tool_get_available_databases",
+        "tool_get_available_schemas",
+        "tool_get_available_tables",
+        "tool_get_table_schema",
+        "tool_get_database_catalog",
+    }
+    if name not in discovery_tools:
+        return None
+
+    return json.dumps(
+        {
+            "executed": False,
+            "error": f"{name} blocked.",
+            "reason": (
+                "Discovery is frozen after planning is finalized. "
+                "Continue with the planned steps instead of further exploration."
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 
@@ -946,7 +1001,7 @@ def _build_step_event(state: "AgentState", name: str, raw_args: dict, args: dict
 
 def _get_tools():
     return [
-        #kommune_where_clause,
+        kommune_where_clause,
         tool_get_available_databases,
         tool_get_available_schemas,
         tool_get_available_tables,
@@ -1038,6 +1093,27 @@ async def _tools_node(state: AgentState) -> AgentState:
                 _update_step_registry(state, name, step_obj, exec_ok, rows_returned)
                 _update_iteration_flags(state, name, step_obj, parsed_result, exec_ok, iter_flags)
 
+                # Trigger replan if a step succeeds with 0 rows but required steps remain
+                if (
+                    exec_ok
+                    and rows_returned == 0
+                    and not state.get("needs_replan")
+                    and state.get("plan_finalized")
+                ):
+                    required = {str(s) for s in state.get("required_step_ids", set())}
+                    executed_now = {
+                        str(k) for k, v in state.get("step_registry", {}).items()
+                        if v.get("executed")
+                    }
+                    if required - executed_now:
+                        step_number = step_obj.get("step") if isinstance(step_obj, dict) else None
+                        state["needs_replan"] = True
+                        state["zero_rows_step"] = step_number
+                        logger.info(
+                            "      [replan] Step %s returned 0 rows — %s required steps remain, flagging for replan",
+                            step_number, len(required - executed_now),
+                        )
+
             elif name == "tool_validate_sql":
                 blocked_json = _guard_validate_sql(state, args)
                 if blocked_json is not None:
@@ -1063,11 +1139,20 @@ async def _tools_node(state: AgentState) -> AgentState:
                 _handle_validate_sql_tool(state, args, result_str, iter_flags)
 
             else:
+                # Scoped result takes priority: if retrieval candidates can serve
+                # this discovery request, use them — even after plan is finalized.
+                # Only freeze if candidates cannot answer the request.
                 scoped_result = _run_retrieval_scoped_discovery_tool(state, name, args)
                 if scoped_result is not None:
                     result_str = scoped_result
                 else:
-                    result_str = await tool.ainvoke(args)
+                    frozen_result = _freeze_discovery_after_plan(state, name)
+                    if frozen_result is not None:
+                        result_str = frozen_result
+                        iter_flags["iter_had_error"] = True
+                        state["last_guard_error"] = result_str
+                    else:
+                        result_str = await tool.ainvoke(args)
                 _handle_discovery_tool(state, name, args, result_str)
 
             _build_tool_message_and_log(

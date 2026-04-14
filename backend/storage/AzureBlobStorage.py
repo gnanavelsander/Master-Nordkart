@@ -11,9 +11,21 @@ from config import AZURE_STORAGE_CONNECTION_STRING, AZURE_STORAGE_CONTAINER
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-blob_service = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
+_blob_service: BlobServiceClient | None = None
 
 src = "storage13.4"
+
+
+def _get_blob_service() -> BlobServiceClient:
+    global _blob_service
+    if _blob_service is None:
+        if not AZURE_STORAGE_CONNECTION_STRING:
+            raise RuntimeError(
+                "AZURE_STORAGE_CONNECTION_STRING is not set. "
+                "Cannot connect to Azure Blob Storage."
+            )
+        _blob_service = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
+    return _blob_service
 
 
 def query_hash(query: str) -> str:
@@ -21,7 +33,7 @@ def query_hash(query: str) -> str:
 
 
 def upload(path: str, data: Any):
-    blob = blob_service.get_blob_client(
+    blob = _get_blob_service().get_blob_client(
         container=AZURE_STORAGE_CONTAINER,
         blob=path,
     )
@@ -30,7 +42,7 @@ def upload(path: str, data: Any):
 
 def query_meta_exists(q_hash: str) -> bool:
     try:
-        blob_service.get_blob_client(
+        _get_blob_service().get_blob_client(
             container=AZURE_STORAGE_CONTAINER,
             blob=f"{src}/{q_hash}/meta.json",
         ).get_blob_properties()
@@ -41,7 +53,7 @@ def query_meta_exists(q_hash: str) -> bool:
 
 def _download_json(path: str) -> Any:
     try:
-        data = blob_service.get_blob_client(
+        data = _get_blob_service().get_blob_client(
             container=AZURE_STORAGE_CONTAINER,
             blob=path,
         ).download_blob().readall()

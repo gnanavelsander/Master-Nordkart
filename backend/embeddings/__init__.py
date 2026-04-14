@@ -8,6 +8,7 @@ from .retrieve_layers import (
     list_candidate_table_names,
     load_index,
     retrieve_catalog_candidates,
+    retrieve_database_candidates,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "list_candidate_table_names",
     "format_table_context",
     "load_index",
+    "retrieve_database_candidates",
 ]
