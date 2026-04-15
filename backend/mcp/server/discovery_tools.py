@@ -243,7 +243,7 @@ async def get_database_catalog(ctx: Context[ServerSession, AppContext],
             catalog.append({
                 "database": db_name,
                 "description": DB_DESCRIPTIONS.get(db_name, ""),
-                "schemas": [{"schema": sch, "tables": tbls[:5]} for sch, tbls in grouped.items()],
+                "schemas": [{"schema": sch, "tables": tbls} for sch, tbls in grouped.items()],
             })
 
         return json.dumps({"databases": catalog}, ensure_ascii=False)
@@ -331,12 +331,28 @@ async def get_table_stats(ctx: Context[ServerSession, AppContext],
     try:
         conn_id = ctx.request_context.lifespan_context.conn_ids[databaseName]
         rows = await ctx.request_context.lifespan_context.db.query(
-            conn_id, f'SELECT COUNT(*) AS row_count FROM "{schemaName}"."{table_name}"'
+            conn_id,
+            """
+            SELECT
+                COALESCE(NULLIF(c.reltuples, -1), 0)::bigint AS estimated_row_count
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1
+              AND c.relname = $2
+              AND c.relkind IN ('r', 'p', 'm', 'f', 'v')
+            LIMIT 1
+            """,
+            (schemaName, table_name),
         )
-        rc = int(rows[0]["row_count"])
-        return json.dumps({"databaseName": databaseName, "schemaName": schemaName,
-                           "table_name": table_name, "row_count": rc,
-                           "is_large_table": _is_large_table(rc)}, ensure_ascii=False)
+        rc = int(rows[0]["estimated_row_count"]) if rows else 0
+        return json.dumps({
+            "databaseName": databaseName,
+            "schemaName": schemaName,
+            "table_name": table_name,
+            "row_count": rc,
+            "row_count_is_estimate": True,
+            "is_large_table": _is_large_table(rc),
+        }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -345,6 +361,12 @@ def _enforce_query_rules(sql: str, row_count: int) -> str | None:
     sql_upper = (sql or "").upper()
     if "SELECT *" in sql_upper:
         return "SELECT * is not allowed."
+    is_aggregate_output = (
+        "GROUP BY" in sql_upper
+        or any(func in sql_upper for func in ("COUNT(", "SUM(", "AVG(", "MIN(", "MAX("))
+    )
+    if is_aggregate_output:
+        return None
     if row_count >= 10000 and "LIMIT" not in sql_upper and "WHERE" not in sql_upper:
         return "Large unfiltered queries must include LIMIT or WHERE."
     return None

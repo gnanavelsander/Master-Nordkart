@@ -1,4 +1,5 @@
 
+import json
 import logging
 
 import geopandas as gpd
@@ -58,6 +59,21 @@ def _to_df(rows: list[dict]) -> pd.DataFrame:
 
 
 
+def _is_geojson_geom(value) -> bool:
+    """Return True if value is a GeoJSON geometry string or dict."""
+    if isinstance(value, dict):
+        return "type" in value and "coordinates" in value
+    if isinstance(value, str):
+        s = value.strip()
+        if s.startswith("{"):
+            try:
+                d = json.loads(s)
+                return isinstance(d, dict) and "type" in d and "coordinates" in d
+            except Exception:
+                pass
+    return False
+
+
 def _detect_geom_col(df: pd.DataFrame) -> str | None:
     if df.empty:
         return None
@@ -68,8 +84,11 @@ def _detect_geom_col(df: pd.DataFrame) -> str | None:
             sample = df[col].dropna()
             if sample.empty:
                 continue
+            val = sample.iloc[0]
+            if _is_geojson_geom(val):
+                return col
             try:
-                geom = _decode_geom(sample.iloc[0])
+                geom = _decode_geom(val)
                 if hasattr(geom, "geom_type"):
                     return col
             except Exception:
@@ -79,8 +98,11 @@ def _detect_geom_col(df: pd.DataFrame) -> str | None:
         sample = df[col].dropna()
         if sample.empty:
             continue
+        val = sample.iloc[0]
+        if _is_geojson_geom(val):
+            return col
         try:
-            geom = _decode_geom(sample.iloc[0])
+            geom = _decode_geom(val)
             if hasattr(geom, "geom_type"):
                 return col
         except Exception:
@@ -97,6 +119,45 @@ def _detect_geom_col(df: pd.DataFrame) -> str | None:
 
 
 
+
+
+def _sjoin_nearest_return_right(
+    left_gdf: gpd.GeoDataFrame,
+    right_gdf: gpd.GeoDataFrame,
+    distance_col: str = "distance",
+) -> list[dict]:
+    """
+    Perform a nearest join but return rows whose geometry is taken from right_gdf
+    (the "found" features), not from left_gdf (the reference / AOI).
+
+    This is correct for queries like "nearest footpath to AOI":
+    - distance is measured between full left and full right geometries (Shapely default)
+    - the result row carries the right-side geometry so the MAP shows the found feature
+
+    index_right in the joined frame maps each left row to the nearest right row's index.
+    We use that index to look up the right geometry explicitly.
+    """
+    if left_gdf.empty or right_gdf.empty:
+        return []
+
+    joined = gpd.sjoin_nearest(left_gdf, right_gdf, how="left", distance_col=distance_col)
+    if joined.empty or "index_right" not in joined.columns:
+        return joined.to_dict("records")
+
+    right_geom_col = right_gdf.geometry.name
+    left_geom_col = left_gdf.geometry.name
+
+    # Map each matched right index → right geometry
+    matched_geoms = joined["index_right"].map(right_gdf[right_geom_col])
+
+    out = joined.copy()
+    # Write right geometry into the output; overwrite left geometry in-place
+    # so the saved rows carry the found feature, not the reference polygon.
+    out[right_geom_col] = matched_geoms
+    if left_geom_col != right_geom_col and left_geom_col in out.columns:
+        out = out.drop(columns=[left_geom_col])
+
+    return out.to_dict("records")
 
 
 def _to_gdf(

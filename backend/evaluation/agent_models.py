@@ -199,6 +199,8 @@ class AgentState(TypedDict, total=False):
 
     needs_replan: bool
     zero_rows_step: Optional[int]
+    replan_reason: Optional[str]
+    replan_error: Optional[str]
     replan_count: int
 
 

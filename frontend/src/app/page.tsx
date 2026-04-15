@@ -1,13 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { FeatureCollection, Geometry } from "geojson";
+import type { Feature, FeatureCollection, Geometry } from "geojson";
 import MapClient from "./components/MapClient";
 import ResultTable from "./ResultTable";
+
+type ChatMessage = { role: "user" | "agent"; text: string; results?: any[] };
+type ConvTurn = { question: string; answer: string | null; sql: string | null; summary: string | null };
 
 export default function Page() {
   const [geojson, setGeojson] = useState<FeatureCollection | undefined>();
   const [aoi, setAoi] = useState<Geometry | null>(null);
+  const [selectedFeature, setSelectedFeature] = useState<Feature | null>(null);
   const [scrollActive, setScrollActive] = useState(false);
 
 
@@ -18,7 +22,12 @@ export default function Page() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [lastResult, setLastResult] = useState<any>(null);
-  const [rightTab, setRightTab] = useState<"sql" | "queries" | "metrics" | "errors">("sql");
+  const [rightTab, setRightTab] = useState<"sql" | "prompt" | "log" | "errors">("sql");
+  const [promptContent, setPromptContent] = useState<string>("");
+  const [promptSaved, setPromptSaved] = useState(false);
+  // per-step edited SQL: { [modelId]: { [stepKey]: string } }
+  const [editedSql, setEditedSql] = useState<Record<string, Record<string, string>>>({});
+  const [expandedStep, setExpandedStep] = useState<Record<string, string | null>>({});
 
 
 
@@ -27,13 +36,30 @@ export default function Page() {
 
 
   // chat history — stored locally, not in Firestore
-  const [messages, setMessages] = useState<{ role: "user" | "agent"; text: string; results?: any[] }[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+
+  // conversation history sent to backend for agent memory
+  const [convHistory, setConvHistory] = useState<ConvTurn[]>([]);
 
   // which model result is shown on map
   const [activeModel, setActiveModel] = useState<string | null>(null);
 
   // table view per model
   const [tableModel, setTableModel] = useState<string | null>(null);
+  const [runMode, setRunMode] = useState<"assistant" | "eval">("assistant");
+
+  function pickPrimaryResult(results: any[], mode: "assistant" | "eval", bestModelId?: string | null) {
+    if (!results.length) return null;
+    if (mode === "eval") {
+      return results.find((r: any) => r.model_id === bestModelId) ?? results[0];
+    }
+    return (
+      results.find((r: any) => r.final_answer) ??
+      results.find((r: any) => r.executed || r.task_completed) ??
+      results.find((r: any) => r.valid_sql) ??
+      results[0]
+    );
+  }
 
 
 
@@ -49,6 +75,7 @@ export default function Page() {
     // add user message to chat
     setMessages((prev) => [...prev, { role: "user", text: userMessage }]);
     setMessage("");
+    setGeojson(undefined); // clear old map drawing before new query
     setLoading(true);
 
     try {
@@ -58,8 +85,10 @@ export default function Page() {
         body: JSON.stringify({
           question: userMessage,
           models: selectedModels,
-          mode: "parallel",
+          mode: runMode,
           aoi,
+          selectedFeature,
+          history: convHistory,
         }),
       });
       console.log("status", res.status);
@@ -68,28 +97,59 @@ export default function Page() {
 
       //convert response to jason
       const data = await res.json();
-
-
-      setLastResult(data.results);
-
-      // get best model
-      const best = data.results.find((r: any)=>r.model_id === data.best_model)
-
-        // Set best model as default on the map 
-       if (best) {
-        setActiveModel(best.model_id);
-        if (best.geojson) setGeojson(best.geojson);
+      if (!res.ok || data.error) {
+        const errorText = data.error ? String(data.error) : `Request failed with status ${res.status}`;
+        setMessages((prev) => [
+          ...prev,
+          { role: "agent", text: `Jeg fikk ikke kjørt forespørselen ennå.\n\n${errorText}` },
+        ]);
+        return;
       }
+
+      const results = Array.isArray(data.results) ? data.results : [];
+      setLastResult(results);
+
+      const best = pickPrimaryResult(results, runMode, data.best_model);
+
+        // Set chosen result as default on the map 
+      if (best) {
+        setActiveModel(best.model_id);
+        setGeojson(best.geojson || undefined);
+      }
+
+      const bestError =
+        best?.all_errors && best.all_errors.length > 0 ? String(best.all_errors[0]) : null;
+      const bestRanAnything = Boolean(best?.executed || best?.valid_sql || best?.task_completed || best?.iterations);
+      const agentText = best?.final_answer
+        ? best.final_answer
+        : bestError
+        ? `Jeg fikk ikke kjørt oppgaven helt ennå.\n\n${bestError}`
+        : runMode === "eval" && bestRanAnything && best
+        ? `Kjørt. Best model: ${best.model_id} (${best.latency_s}s, ${best.iterations} iterations)`
+        : runMode === "assistant" && bestRanAnything
+        ? "Jeg jobber videre med dette, men har ikke et fullført svar ennå."
+        : "Ingen modell klarte å fullføre oppgaven.";
 
       // add agent response to chat
       setMessages((prev) => [
         ...prev,
         {
           role: "agent",
-          text: best
-            ? `Results found. Best model: ${best.model_id} (${best.latency_s}s, ${best.iterations} iterations)`
-            : "No model was able to complete the task.",
-          results: data.results,
+          text: agentText,
+          results: results,
+        },
+      ]);
+
+      // update conversation history for agent memory
+      setConvHistory((prev) => [
+        ...prev,
+        {
+          question: userMessage,
+          answer: best?.final_answer ?? null,
+          sql: best?.final_sql ?? null,
+          summary: best
+            ? `Query executed by ${best.model_id}. Rows returned: ${best.result_data?.row_count ?? "unknown"}.`
+            : "No result.",
         },
       ]);
     } finally {
@@ -110,6 +170,15 @@ export default function Page() {
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
 
   useEffect(() => {
+    if (rightTab === "prompt" && !promptContent) {
+      fetch("http://localhost:8000/prompt/prompt_v1")
+        .then((r) => r.json())
+        .then((data) => setPromptContent(data.content ?? ""))
+        .catch(() => {});
+    }
+  }, [rightTab]);
+
+  useEffect(() => {
     fetch("http://localhost:8000/models")
       .then((r) => r.json())
       .then((data) => {
@@ -123,14 +192,21 @@ export default function Page() {
   const modelLength = selectedModels.length;
 
 
-  function handleDraw(aoiGeo: Geometry) {
-    setAoi(aoiGeo);
-  } 
+  function handleDraw(aoiGeo: Geometry | null) {
+    if (aoiGeo === null) {
+      console.log("[AOI] cleared");
+      setAoi(null);
+    } else {
+      console.log("[AOI] drawn geometry:", JSON.stringify(aoiGeo, null, 2));
+      setAoi(aoiGeo);
+    }
+  }
 
   //Updates the map with that model’s spatial result.
   function showOnMap(r: any) {
     setActiveModel(r.model_id);
-    if (r.geojson) setGeojson(r.geojson);
+    setGeojson(r.geojson || undefined);
+    setSelectedFeature(null);
   }
 
  // states
@@ -159,16 +235,16 @@ function showTable(r: any) {
   }
 
   return (
-    <div className="p-4">
-      <h2 className="text-xl font-bold mb-6">Nordkart Agent</h2>
+    <div className="h-screen overflow-hidden bg-black px-6 pt-8 pb-6">
+      <h2 className="text-2xl font-bold mb-6 text-white">Nordkart Agent</h2>
 
-      <div className="grid grid-cols-[1fr_700px] gap-3">
+      <div className="mx-auto grid h-[calc(100vh-96px)] w-full max-w-[1920px] grid-cols-[minmax(0,1fr)_660px] gap-10 items-start">
 
         {/* map + chat */}
-        <div className="flex flex-col items-center gap-6">
+        <div className="flex h-full flex-col items-center gap-6 pt-2">
 
        {/* MAP or TABLE */}
-<div className="w-[800px]">
+<div className="w-[980px] max-w-full flex-1 min-h-0">
 
     {/* back to map button */}
     {leftView === "table" && (
@@ -181,7 +257,9 @@ function showTable(r: any) {
     )}
 
     {leftView === "map" && (
-        <MapClient geojson={geojson} onDraw={handleDraw} />
+        <div className="h-full overflow-hidden rounded-2xl border border-zinc-800 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
+          <MapClient geojson={geojson} onDraw={handleDraw} onFeatureSelect={setSelectedFeature} />
+        </div>
     )}
 
     {leftView === "table" && (
@@ -193,8 +271,6 @@ function showTable(r: any) {
     )}
 </div>
         
-
-
         {/* TABLE — */}
         {tableModel && lastResult && (
             <ResultTable
@@ -218,52 +294,31 @@ function showTable(r: any) {
 
 
           {/* CHAT */}
-          <aside className="w-[800px] rounded-xl border p-4 h-[400px] flex flex-col relative">
+          <aside className="w-[980px] max-w-full rounded-2xl border border-zinc-700 bg-[#050505] p-4 h-[450px] flex flex-col relative shrink-0">
 
             {/* messages */}
 <div className="flex-1 overflow-y-auto mb-4 space-y-3 w-full custom-scroll">
                 <p className="text-sm text-gray-600">What spatial query would you like to run?</p>
+                {selectedFeature && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                    Valgt objekt: {
+                      String(
+                        (selectedFeature.properties as any)?.name ??
+                        (selectedFeature.properties as any)?.navn ??
+                        (selectedFeature.properties as any)?.informasjon ??
+                        (selectedFeature.properties as any)?.objid ??
+                        "ukjent objekt"
+                      )
+                    }
+                  </div>
+                )}
 
               {messages.map((msg, i) => (
-                <div key={i} className={msg.role === "user" ? "text-right" : "text-left"}>
-                  <div className="bg-zinc-800 px-3 py-2 rounded-lg inline-block text-white text-sm">
+                <div key={i} className="text-left">
+                  <div className={`px-3 py-2 rounded-lg inline-block text-sm whitespace-pre-wrap ${msg.role === "user" ? "bg-zinc-700 text-gray-200" : "bg-zinc-900 text-white"}`}>
                     {msg.text}
                   </div>
-{/* metrics table under agent reply */}
-{msg.role === "agent" && msg.results && (
-  <div className="mt-2">
-    <table className="w-full text-xs">
-      <thead>
-        <tr className="border-b border-gray-700">
-          <th className="text-left py-1 text-orange-400 font-mono">Modell</th>
-          <th className="text-left py-1 text-cyan-400 font-mono">Valid</th>
-          <th className="text-left py-1 text-cyan-400 font-mono">Iter</th>
-          <th className="text-left py-1 text-cyan-400 font-mono">Latency</th>
-          <th className="text-left py-1 text-cyan-400 font-mono">Done</th>
-        </tr>
-      </thead>
-      <tbody>
-        {msg.results.map((r: any) => (
-          <tr key={r.model_id} className="border-b border-gray-800">
-            <td className="py-1 text-orange-300 font-mono">{r.model_id}</td>
-            <td className={`py-1 font-mono ${r.valid_sql ? "text-green-400" : "text-red-400"}`}>
-              {r.valid_sql ? "Yes" : "No"}
-            </td>
-            <td className="py-1 text-cyan-300 font-mono">{r.iterations}</td>
-            <td className="py-1 text-cyan-300 font-mono">{r.latency_s}s</td>
-            <td className={`py-1 font-mono ${r.task_completed ? "text-green-400" : "text-gray-500"}`}>
-              {r.task_completed ? "Yes" : "No"}
-            </td>
-      
-
-
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  </div>
-)}
-</div>
+                </div>
 ))}
 
 {loading && (
@@ -271,7 +326,7 @@ function showTable(r: any) {
 )}
 </div>
             {/* MODELS */}
-            <div className="right-4 bottom-16 flex gap-3">
+            <div className="right-4 bottom-16 flex flex-wrap gap-6">
               {ALL_MODELS.map((model) => (
                 <label key={model} className="flex items-center gap-2">
                   <input
@@ -330,57 +385,32 @@ function showTable(r: any) {
         </div>
 
         {/* SQL / queries / metrics panel */}
-        <div className="sticky top-6 w-[500px] h-[85vh] flex flex-col border border-gray-700 rounded-xl bg-[#0d0d0d]">
+        <div className="sticky top-8 justify-self-end w-[660px] min-w-0 h-full flex flex-col border border-gray-700 rounded-2xl bg-[#0d0d0d]">
 
           {/* Tabs */}
           <div className="flex border-b border-gray-700">
-            <button
-              onClick={() => setRightTab("sql")}
-              className={`flex-1 p-2 text-sm ${rightTab === "sql" ? "text-white" : "text-gray-400"}`}
-            >
-              SQL
-            </button>
-                     <button
-    onClick={() => setRightTab("metrics")}
-    className={`flex-1 p-2 text-sm ${rightTab === "metrics" ? "text-white" : "text-gray-400"}`}
-  >
-    Metrics
-  </button>
-            <button
-              onClick={() => setRightTab("queries")}
-              className={`flex-1 p-2 text-sm ${rightTab === "queries" ? "text-white" : "text-gray-400"}`}
-            >
-              Queries
-            </button>
-                 <button
-              onClick={() => setRightTab("errors")}
-              className={`flex-1 p-2 text-sm ${rightTab === "errors" ? "text-white" : "text-gray-400"}`}
-            >
-              Errors 
-            </button>
-            
-     
-     
-      
+            {(["sql", "prompt", "log", "errors"] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setRightTab(tab)}
+                className={`flex-1 p-2 text-sm ${rightTab === tab ? "text-white border-b border-white" : "text-gray-400"}`}
+              >
+                {tab === "sql" ? "Steps" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
           </div>
 
           {/* Content */}
-          <div className="flex-1 overflow-y-auto custom-scroll p-3">
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scroll p-3">
 
+            {/* STEPS TAB */}
             {rightTab === "sql" && (
               <div className="space-y-6">
                 {lastResult?.map((r: any) => (
-                  <div
-                    key={r.model_id}
-                    className={`border rounded-xl p-4 flex flex-col gap-2 ${
-                      activeModel === r.model_id ? "border-blue-500" : "border-gray-700"
-                    }`}
-                  >
-                    {/* modell header */}
-                    <div className="flex items-center justify-between shrink-0">
-                      <h3 className="text-sm font-semibold text-green-400">
-                        {r.model_id}
-                      </h3>
+                  <div key={r.model_id} className={`border rounded-xl p-3 flex flex-col gap-2 ${activeModel === r.model_id ? "border-blue-500" : "border-gray-700"}`}>
+                    {/* model header */}
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-semibold text-green-400">{r.model_id}</h3>
                       <div className="flex items-center gap-2 text-xs text-gray-400">
                         <span>{r.iterations} iter</span>
                         <span>{r.latency_s}s</span>
@@ -388,41 +418,60 @@ function showTable(r: any) {
                       </div>
                     </div>
 
-                    {/* Final answer */}
-                    {r.final_answer && (
-                      <p className="text-xs text-cyan-300 italic border-l-2 border-cyan-700 pl-2">
-                        {r.final_answer}
-                      </p>
+                    {/* Steps */}
+                    {r.steps && r.steps.length > 0 ? (
+                      <div className="space-y-2">
+                        {r.steps.map((step: any) => {
+                          const stepKey = `${r.model_id}-${step.step}`;
+                          const isExpanded = expandedStep[r.model_id] === String(step.step);
+                          const sql = editedSql[r.model_id]?.[step.step] ?? step.sql ?? "";
+                          const statusColor = step.status === "ok" ? "text-green-400" : step.status === "error" ? "text-red-400" : "text-yellow-400";
+                          return (
+                            <div key={stepKey} className="border border-gray-700 rounded-lg overflow-hidden">
+                              {/* step header — click to expand */}
+                              <button
+                                className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-zinc-800 text-left"
+                                onClick={() => setExpandedStep(prev => ({ ...prev, [r.model_id]: isExpanded ? null : String(step.step) }))}
+                              >
+                                <span className="bg-zinc-700 text-gray-300 rounded px-1.5 py-0.5 font-mono">#{step.step}</span>
+                                <span className="text-blue-400 font-mono">{step.action ?? "?"}</span>
+                                {step.database && <span className="text-gray-500">{step.database}</span>}
+                                <span className={`ml-auto font-mono ${statusColor}`}>{step.status ?? "pending"}</span>
+                                {step.rows_returned != null && <span className="text-gray-400">{step.rows_returned} rows</span>}
+                                {step.sql_repairs > 0 && <span className="text-yellow-500">{step.sql_repairs} repair</span>}
+                              </button>
+
+                              {/* expanded: editable SQL */}
+                              {isExpanded && (
+                                <div className="border-t border-gray-700 p-2 flex flex-col gap-2">
+                                  <textarea
+                                    className="w-full text-xs font-mono text-white bg-zinc-900 border border-gray-600 rounded p-2 resize-y min-h-[100px]"
+                                    value={sql}
+                                    onChange={(e) => setEditedSql(prev => ({
+                                      ...prev,
+                                      [r.model_id]: { ...(prev[r.model_id] ?? {}), [step.step]: e.target.value }
+                                    }))}
+                                  />
+                                  {step.error && (
+                                    <p className="text-xs text-red-400 font-mono bg-zinc-900 px-2 py-1 rounded">{step.error}</p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-500">Ingen steg registrert.</p>
                     )}
 
-                 {/* SQL */}
-<div className="overflow-hidden">
-  <pre className="text-xs text-white whitespace-pre-wrap break-words w-full">
-    {r.final_sql || r.all_errors?.join("\n")}
-  </pre>
-</div>
-
-                    {/* knapper */}
+                    {/* action buttons */}
                     {(r.executed || r.valid_sql) && (
                       <div className="flex gap-2 mt-1">
-                        <button
-                          onClick={() => showOnMap(r)}
-                          className={`px-3 py-1 rounded text-xs border ${
-                            activeModel === r.model_id
-                              ? "bg-blue-600 border-blue-500 text-white"
-                              : "border-gray-600 text-gray-300 hover:bg-zinc-700"
-                          }`}
-                        >
+                        <button onClick={() => showOnMap(r)} className={`px-3 py-1 rounded text-xs border ${activeModel === r.model_id ? "bg-blue-600 border-blue-500 text-white" : "border-gray-600 text-gray-300 hover:bg-zinc-700"}`}>
                           Vis på kart
                         </button>
-                        <button
-                          onClick={() => showTable(r)}
-                          className={`px-3 py-1 rounded text-xs border ${
-                            tableModel === r.model_id
-                              ? "bg-green-700 border-green-600 text-white"
-                              : "border-gray-600 text-gray-300 hover:bg-zinc-700"
-                          }`}
-                        >
+                        <button onClick={() => showTable(r)} className={`px-3 py-1 rounded text-xs border ${tableModel === r.model_id ? "bg-green-700 border-green-600 text-white" : "border-gray-600 text-gray-300 hover:bg-zinc-700"}`}>
                           Vis tabell
                         </button>
                       </div>
@@ -432,49 +481,51 @@ function showTable(r: any) {
               </div>
             )}
 
-            {rightTab === "queries" && (
-              <div className="text-white text-sm space-y-2">
-                {messages
-                  .filter((msg) => msg.role === "user")
-                  .map((msg, i) => (
-                    <div key={i} className="text-left">
-                      <div className="bg-zinc-800 px-3 py-2 rounded-lg inline-block">
-                        {msg.text}
-                      </div>
-                    </div>
-                  ))}
+            {/* PROMPT TAB */}
+            {rightTab === "prompt" && (
+              <div className="flex flex-col gap-3 h-full">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">prompt_v1.txt</span>
+                  <button
+                    onClick={async () => {
+                      await fetch("http://localhost:8000/prompt/prompt_v1", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ content: promptContent }),
+                      });
+                      setPromptSaved(true);
+                      setTimeout(() => setPromptSaved(false), 2000);
+                    }}
+                    className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded"
+                  >
+                    {promptSaved ? "Lagret ✓" : "Lagre"}
+                  </button>
+                </div>
+                <textarea
+                  className="flex-1 w-full text-xs font-mono text-white bg-zinc-900 border border-gray-700 rounded p-3 resize-none min-h-[500px]"
+                  value={promptContent}
+                  onChange={(e) => setPromptContent(e.target.value)}
+                />
               </div>
             )}
 
-       {rightTab === "metrics" && (
-  <div className="space-y-4">
-    {lastResult?.map((r: any) => (
-      <div key={r.model_id} className="border border-gray-700 rounded-xl p-4">
-        <h3 className="text-xs font-semibold text-green-400 mb-3">{r.model_id}</h3>
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="text-gray-400">Task completed</div>
-          <div className={`font-mono ${r.task_completed ? "text-green-400" : "text-red-400"}`}>
-            {r.task_completed ? "Yes" : "No"}
-          </div>
-          <div className="text-gray-400">Valid SQL</div>
-          <div className={`font-mono ${r.valid_sql ? "text-green-400" : "text-red-400"}`}>
-            {r.valid_sql ? "Yes" : "No"}
-          </div>
-          <div className="text-gray-400">Executed</div>
-          <div className={`font-mono ${r.executed ? "text-green-400" : "text-gray-500"}`}>
-            {r.executed ? "Yes" : "No"}
-          </div>
-          <div className="text-gray-400">Iterations</div>
-          <div className="text-cyan-300 font-mono">{r.iterations}</div>
-          <div className="text-gray-400">SQL repairs</div>
-          <div className="text-cyan-300 font-mono">{r.sql_repairs_used}</div>
-          <div className="text-gray-400">Latency</div>
-          <div className="text-cyan-300 font-mono">{r.latency_s}s</div>
-        </div>
-      </div>
-    ))}
-  </div>
-)}
+            {/* LOG TAB */}
+            {rightTab === "log" && (
+              <div className="space-y-4 min-w-0">
+                {!lastResult && <p className="text-xs text-gray-500">Ingen kjøring ennå.</p>}
+                {lastResult?.map((r: any) => (
+                  <div key={r.model_id} className="min-w-0 overflow-hidden rounded-xl border border-gray-800 bg-zinc-950/50 p-3">
+                    {r.full_log ? (
+                      <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words text-xs font-mono leading-relaxed text-gray-300">
+                        {r.full_log}
+                      </pre>
+                    ) : (
+                      <p className="text-xs text-gray-500">Ingen logg tilgjengelig.</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
 
 
 {rightTab === "errors" && (
@@ -512,6 +563,28 @@ function showTable(r: any) {
 
 
           </div>
+        </div>
+      </div>
+
+      <div className="fixed bottom-14 left-3 z-[600]">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="flex h-7 w-7 items-center justify-center rounded-full border border-zinc-600 bg-zinc-900 text-xs font-semibold text-white"
+            aria-label="Mode"
+          >
+            M
+          </button>
+          <select
+            id="run-mode"
+            value={runMode}
+            onChange={(e) => setRunMode(e.target.value as "assistant" | "eval")}
+            className="bg-transparent px-1 py-1 text-sm text-white outline-none"
+            aria-label="Run mode"
+          >
+            <option value="assistant">assistant</option>
+            <option value="eval">eval</option>
+          </select>
         </div>
       </div>
     </div>

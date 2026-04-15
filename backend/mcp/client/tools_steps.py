@@ -102,6 +102,11 @@ async def execute_transform_crs_step(run_id: str, step: dict) -> dict:
     return _parse_step(raw, "execute_transform_crs_step")
 
 
+async def get_step_result(run_id: str, step_no: int) -> dict:
+    raw = await mcp_call("get_step_result", {"run_id": run_id, "step_no": step_no})
+    return _parse(raw, "get_step_result")
+
+
 
 
 
@@ -114,5 +119,4 @@ tool_cleanup_run = StructuredTool.from_function(
     name="tool_cleanup_run",
     description="Delete temporary stored step results for a run_id on the MCP server.",
 )
-
 

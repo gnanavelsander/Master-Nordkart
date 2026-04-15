@@ -100,6 +100,13 @@ class CleanFormatter(logging.Formatter):
         
         
         
+        if name == "backend.assistant_runtime":
+            if "✓" in msg:
+                return f"{GREEN}  [AGENT]{RESET} {msg}"
+            if "✗" in msg or "error" in msg.lower() or "failed" in msg.lower():
+                return f"{RED}  [AGENT]{RESET} {msg}"
+            return f"{CYAN}  [AGENT]{RESET} {msg}"
+
         if name == "reporting":
             return f"      {msg}"
 
@@ -134,6 +141,7 @@ def setup_logging() -> None:
 
     for name in [
         "__main__",
+        "backend.assistant_runtime",
         "backend.database.database",
         "backend.mcp.client.client",
         "backend.mcp.server.run",

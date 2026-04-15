@@ -185,10 +185,8 @@ def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
         "task plan",
         "query plan",
     )
-    # Allow implicit plan: multiple "step N" lines even without an explicit header
     has_header = any(header in lowered_raw for header in plan_headers)
-    has_implicit_plan = len(re.findall(r"\bstep\s*\d+\b", lowered_raw)) >= 2
-    if not has_header and not has_implicit_plan:
+    if not has_header:
         return {}, set()
 
     _SECTION_HEADERS = (
@@ -289,7 +287,10 @@ def _valid_sql_from_steps(
     if query_steps:
         return all(step.get("validated", False) for step in query_steps)
 
-    return valid_sql_fallback
+    return all(
+        step.get("executed", False) and step.get("status") == "ok"
+        for step in outcomes
+    )
 
 
 def _executed_from_steps(

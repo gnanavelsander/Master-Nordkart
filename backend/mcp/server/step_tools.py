@@ -12,7 +12,7 @@ from mcp.server.session import ServerSession
 
 from backend.mcp.server.registry import mcp
 from backend.mcp.server.discovery_tools import _enforce_query_rules
-from backend.mcp.server.geometry_utils import _detect_geom_col, _to_df, _to_gdf
+from backend.mcp.server.geometry_utils import _detect_geom_col, _sjoin_nearest_return_right, _to_df, _to_gdf
 from backend.mcp.server.models import AppContext, PlanStep
 from backend.mcp.server.step_storage import (
     _err,
@@ -67,6 +67,29 @@ async def cleanup_run(ctx: Context[ServerSession, AppContext], run_id: str) -> s
         if con is not None:
             con.close()
 
+
+@mcp.tool(
+    name="get_step_result",
+    description="Fetch the full stored result for a previously executed step.",
+)
+async def get_step_result(ctx: Context[ServerSession, AppContext], run_id: str, step_no: int) -> str:
+    try:
+        entry = _get_step_entry(ctx, run_id, step_no)
+        rows = _get_rows(ctx, run_id, step_no)
+        columns = list(rows[0].keys()) if rows else []
+        return json.dumps({
+            "run_id": run_id,
+            "step": step_no,
+            "row_count": len(rows),
+            "columns": columns,
+            "rows": rows,
+            "geom_col": entry.get("geom_col"),
+            "crs": entry.get("crs"),
+            "storage": entry.get("storage"),
+        }, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
 # --------------------------------------------------
 # Step tools
 # --------------------------------------------------
@@ -80,14 +103,14 @@ async def execute_query_step(ctx: Context[ServerSession, AppContext], run_id: st
             return _err(s.step, "query", "step requires database and sql.")
         if (s.validSql or "").strip().lower() != "ok":
             return _err(s.step, "query", "sql must be validated before execution (validSql must be 'ok').")
-        if not s.schema_name or not s.table_name:
-            return _err(s.step, "query", "step requires schema_name and table_name for guard checks.")
 
         conn_id = ctx.request_context.lifespan_context.conn_ids[s.database]
-        stats_rows = await ctx.request_context.lifespan_context.db.query(
-            conn_id, f'SELECT COUNT(*) AS row_count FROM "{s.schema_name}"."{s.table_name}"'
-        )
-        row_count = int(stats_rows[0]["row_count"])
+        row_count = 0
+        if s.schema_name and s.table_name:
+            stats_rows = await ctx.request_context.lifespan_context.db.query(
+                conn_id, f'SELECT COUNT(*) AS row_count FROM "{s.schema_name}"."{s.table_name}"'
+            )
+            row_count = int(stats_rows[0]["row_count"])
 
         rule_error = _enforce_query_rules(s.sql, row_count)
         if rule_error:
@@ -98,7 +121,7 @@ async def execute_query_step(ctx: Context[ServerSession, AppContext], run_id: st
 
         # Detect actual SRID from geometry_columns instead of hardcoding
         detected_crs: str | None = None
-        if geom_col:
+        if geom_col and s.schema_name and s.table_name:
             try:
                 srid_rows = await ctx.request_context.lifespan_context.db.query(
                     conn_id,
@@ -129,7 +152,7 @@ async def execute_query_step(ctx: Context[ServerSession, AppContext], run_id: st
 @mcp.tool(
     name="execute_filter_step",
     description=(
-        "Filter rows from a previous step using pandas eval expressions. "
+        "Filter rows from a previous step using pandas query expressions. "
         "Supports standard comparisons and boolean logic only, e.g. "
         "'column > 100', 'status == \"active\"', 'area > 500 and risk == \"high\"'. "
         "Does NOT support PostGIS/SQL functions such as ST_IsValid, ST_Within etc. "
@@ -144,10 +167,15 @@ async def execute_filter_step(ctx: Context[ServerSession, AppContext], run_id: s
         # Accept both 'filters' (list) and 'filter' (singular string alias)
         all_filters = s.filters or ([s.filter] if s.filter else [])
         if not df.empty and all_filters:
-            mask = pd.Series(True, index=df.index)
             for expr in all_filters:
-                mask &= df.eval(expr)
-            df = df[mask]
+                try:
+                    df = df.query(expr, engine="python")
+                except Exception as e:
+                    return _err(
+                        s.step,
+                        "filter",
+                        f"Invalid filter expression {expr!r}: {e}. Available columns: {list(df.columns)}",
+                    )
         rows = df.to_dict("records")
         _save_rows(ctx, run_id, s.step, rows,
                    step_meta={"action": "filter", "source_step": s.source_step, "filters": all_filters})
@@ -324,11 +352,11 @@ async def execute_nearest_step(ctx: Context[ServerSession, AppContext], run_id: 
                             s.right_geom or right_entry.get("geom_col"), right_entry.get("crs"))
         if left_gdf.crs and right_gdf.crs and left_gdf.crs != right_gdf.crs:
             right_gdf = right_gdf.to_crs(left_gdf.crs)
-        rows = [] if (left_gdf.empty or right_gdf.empty) else \
-            gpd.sjoin_nearest(left_gdf, right_gdf, how="left",
-                              distance_col=s.metric_as or "distance").to_dict("records")
+        rows = _sjoin_nearest_return_right(
+            left_gdf, right_gdf, distance_col=s.metric_as or "distance"
+        )
         _save_rows(ctx, run_id, s.step, rows,
-                   geom_col=left_gdf.geometry.name, crs=str(left_gdf.crs) if left_gdf.crs else None,
+                   geom_col=right_gdf.geometry.name, crs=str(right_gdf.crs) if right_gdf.crs else None,
                    step_meta={"action": "nearest", "left_source": s.left_source,
                                "right_source": s.right_source})
         return _ok(run_id, s.step, "nearest", rows)
@@ -724,4 +752,3 @@ async def execute_transform_crs_step(ctx: Context[ServerSession, AppContext], ru
         return _ok(run_id, s.step, "transform_crs", rows)
     except Exception as e:
         return _err(step_no, "transform_crs", str(e))
-

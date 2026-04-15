@@ -31,12 +31,14 @@ PGCONN_TRAFIKKMENGDE_GIS = os.getenv("PGCONN_TRAFIKKMENGDE_GIS")
 PGCONN_STEDSNAVN_GIS = os.getenv("PGCONN_STEDSNAVN_GIS")
 
 
-
+PGCONN_AREALRESSURSKART_AR50 = os.getenv("PGCONN_AREALRESSURSKART_AR50")
 
 
 
 AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+
+ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 
 AZURE_FOUNDRY_KEY = os.getenv("AZURE_FOUNDRY_KEY")
 AZURE_FOUNDRY_ENDPOINT = os.getenv("AZURE_FOUNDRY_ENDPOINT")
@@ -162,6 +164,7 @@ AZURE_STORAGE_CONTAINER = "llmevaluator"
 
 
 DB_DESCRIPTIONS = {
+    "postgis": "General PostGIS database from PGCONN_STRING with mixed spatial tables such as buildings, flood zones, routes, and related GIS layers.",
     "matrikkelenbygning": "Building and cadastral building data, including building identifiers, municipality attributes, status fields, and building representation points.",
     "flomaktsomrader": "Flood hazard and flood susceptibility spatial data, including hazard polygons and related flood-risk layers.",
     "flomsoner": "Flood zone spatial data, including flood hazard polygons and flood zone identifiers.",
@@ -175,4 +178,11 @@ DB_DESCRIPTIONS = {
     "statistiskrutenett1km": "Regular 1 km statistical grid for spatial aggregation and grid-based analysis independent of municipality boundaries.",
     "trafikkmengde": "Road traffic volume data linked to road segments, useful for traffic intensity filtering and transport-related spatial analysis.",
     "stedsnavn": "Place name data with coordinates, language form, municipality affiliation, and place name type.",
+
+    "arealressurskart_ar50": "AR50 land resource data with area types, agriculture classes, and forest productivity information.",
+
+
+
+
+
 }

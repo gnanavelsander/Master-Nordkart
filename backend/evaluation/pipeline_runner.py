@@ -42,6 +42,7 @@ from reporting import extract_agent_trace, _print_summary, _print_details, store
 from backend.logging_utils import setup_logging
 from backend.mcp.client.client import mcp_client
 from backend.mcp.client.tools_discovery import prefetch_databases
+from backend.mcp.client.tools_steps import get_step_result
 from backend.embeddings.retrieve_layers import (
     build_retrieval_context,
     list_candidate_table_names,
@@ -62,6 +63,29 @@ _MAX_RETRY_DELAY_S = 120
 logger = logging.getLogger(__name__)
 
 
+async def _expand_result_for_frontend(result_data: dict | None) -> dict | None:
+    if not isinstance(result_data, dict):
+        return result_data
+
+    run_id = result_data.get("run_id")
+    step_no = result_data.get("step")
+    if not run_id or step_no is None:
+        return result_data
+
+    try:
+        full_result = await get_step_result(str(run_id), int(step_no))
+    except Exception as e:
+        logger.warning("Failed to fetch full step result run_id=%s step=%s: %s", run_id, step_no, e)
+        return result_data
+
+    if isinstance(full_result, dict) and "error" not in full_result:
+        merged = dict(result_data)
+        merged.update(full_result)
+        return merged
+
+    return result_data
+
+
 def _candidate_database_order(candidates: list[dict]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -80,6 +104,8 @@ async def agent(
     params: ModelParams,
     prompt: str,
     attempt_number: int = 0,
+    aoi_context: str | None = None,
+    history_context: str | None = None,
 ) -> AgentResult:
     retrieval_candidates: list[dict] = []
     retrieval_context = ""
@@ -130,6 +156,10 @@ async def agent(
     msgs = [SystemMessage(content=prompt)]
     if retrieval_context:
         msgs.append(SystemMessage(content=retrieval_context))
+    if history_context:
+        msgs.append(SystemMessage(content=history_context))
+    if aoi_context:
+        msgs.append(SystemMessage(content=aoi_context))
     msgs.append(HumanMessage(content=user_input))
 
     init_state: AgentState = {
@@ -274,6 +304,8 @@ async def pipeline(
     params: ModelParams,
     prompt: str,
     attempt_number: int = 0,
+    aoi_context: str | None = None,
+    history_context: str | None = None,
 ) -> PipelineResult:
     t0 = time.time()
 
@@ -283,13 +315,16 @@ async def pipeline(
         params=params,
         prompt=prompt,
         attempt_number=attempt_number,
+        aoi_context=aoi_context,
+        history_context=history_context,
     )
+    full_result_data = await _expand_result_for_frontend(result.result_data)
 
     return PipelineResult(
         model_id=model_id,
         final_answer=result.answer,
         final_sql=result.sql,
-        result_data=result.result_data,
+        result_data=full_result_data,
         valid_sql=result.valid_sql,
         executed=result.executed,
         iterations=result.iterations,
@@ -315,6 +350,8 @@ async def _run_one_with_retry(
     prompt: str,
     sem: asyncio.Semaphore,
     retries: int = 0,
+    aoi_context: str | None = None,
+    history_context: str | None = None,
 ) -> PipelineResult | AgentRunError:
     async with sem:
         delay = 30
@@ -347,9 +384,12 @@ async def _run_one_with_retry(
             try:
                 result = await pipeline(
                     model_id=model_id,
-                    question= user_input,
-                    params=params, prompt=prompt,
+                    question=user_input,
+                    params=params,
+                    prompt=prompt,
                     attempt_number=attempt,
+                    aoi_context=aoi_context,
+                    history_context=history_context,
                 )
                 return result
 
@@ -391,6 +431,8 @@ async def run_all(
     model_ids: list[str],
     params: ModelParams,
     prompt: str,
+    aoi_context: str | None = None,
+    history_context: str | None = None,
 ) -> list:
     results = []
     sem = asyncio.Semaphore(1)
@@ -406,6 +448,8 @@ async def run_all(
             params=params,
             prompt=prompt,
             sem=sem,
+            aoi_context=aoi_context,
+            history_context=history_context,
         )
         results.append(result)
 
@@ -432,7 +476,7 @@ async def main():
 
     queries = [
   
-                "Count the number of buildings per municipality.",
+                "Which five municipalities have the highest number of buildings in flood hazard zones.",
     ]
 
     model_ids = ["gpt-5-mini"]

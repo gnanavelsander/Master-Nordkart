@@ -14,6 +14,16 @@ async def get_available_databases() -> list[str]:
     return data
 
 
+async def run_postgis_query(sql: str, databaseName: str) -> list[dict]:
+    raw = await mcp_call("run_postgis_query", {"sql": sql, "databaseName": databaseName})
+    data = _parse(raw, "run_postgis_query")
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(str(data["error"]))
+    if not isinstance(data, list):
+        raise RuntimeError(f"Unexpected response from run_postgis_query: {data}")
+    return data
+
+
 async def prefetch_databases(database_names: list[str]) -> dict:
     raw = await mcp_call("prefetch_databases", {"databaseNames": database_names})
     return _parse(raw, "prefetch_databases")

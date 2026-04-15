@@ -34,6 +34,31 @@ from backend.storage.AzureBlobStorage import (
 logger = logging.getLogger(__name__)
 
 
+def _extract_result_contract_info(result_data: dict | None) -> dict:
+    if not isinstance(result_data, dict):
+        return {
+            "model_summary_result": None,
+            "full_result_available": False,
+            "full_result_row_count": None,
+        }
+
+    model_summary = {
+        "columns": list(result_data.get("columns") or []),
+        "row_count": result_data.get("row_count", result_data.get("rows_returned")),
+        "sample_rows": list(result_data.get("sample_rows") or []),
+        "result_truncated_for_model": bool(result_data.get("result_truncated_for_model", False)),
+    }
+    full_rows = result_data.get("rows")
+    full_result_available = isinstance(full_rows, list)
+    full_result_row_count = len(full_rows) if full_result_available else model_summary["row_count"]
+
+    return {
+        "model_summary_result": model_summary,
+        "full_result_available": full_result_available,
+        "full_result_row_count": full_result_row_count,
+    }
+
+
 def _extract_retrieval_info(run_logs: list | None, fallback: dict | None = None) -> dict:
     retrieval = dict(fallback or {})
     logs = run_logs or []
@@ -487,11 +512,11 @@ def _print_details(results: list):
         logger.info("  latency_s          : %.3f", r.latency_s)
         if retrieval:
             logger.info("  retrieval_score    : %s", retrieval.get("top_score"))
-            logger.info("  retrieval_scoped   : %s", retrieval.get("scope_active"))
-            logger.info(
-                "  retrieval_candidates: %s",
-                [c.get("full_name") for c in retrieval.get("candidates", [])],
-            )
+            # logger.info("  retrieval_scoped   : %s", retrieval.get("scope_active"))
+            # logger.info(
+            #     "  retrieval_candidates: %s",
+            #     [c.get("full_name") for c in retrieval.get("candidates", [])],
+            # )
 
         step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(r.run_logs)
         failed_summary = _failed_step_summary(r.run_logs)
@@ -777,6 +802,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                 active_errors,
             )
             metrics = _summary_metrics(snap.get("run_logs", []), trace)
+            result_contract = _extract_result_contract_info(None)
 
             doc = {
                 "run_id": run_id,
@@ -800,6 +826,9 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "plan_finalized": plan["plan_finalized"],
                 "planned_steps": plan["planned_steps"],
                 "required_step_ids": plan["required_step_ids"],
+                "model_summary_result": result_contract["model_summary_result"],
+                "full_result_available": result_contract["full_result_available"],
+                "full_result_row_count": result_contract["full_result_row_count"],
                 "errors": active_errors,
                 "trace": asdict(trace),
                 "run_logs": snap.get("run_logs", []),
@@ -830,6 +859,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "total_tokens": tokens.get("total_tokens"),
                     "retrieval_scope_active": retrieval["scope_active"],
                     "retrieval_top_score": retrieval["top_score"],
+                    "full_result_available": result_contract["full_result_available"],
+                    "full_result_row_count": result_contract["full_result_row_count"],
                     "total_step_errors": metrics["total_step_errors"],
                     "blocked_calls": metrics["blocked_calls"],
                     "discovery_calls": metrics["discovery_calls"],
@@ -867,6 +898,7 @@ async def store_run(run: EvalRun, results: list) -> str:
             )
             status = "completed" if task_completed else "incomplete"
             terminal_context = _build_terminal_context(r.run_logs or [], active_errors)
+            result_contract = _extract_result_contract_info(r.result_data)
 
             doc = {
                 "run_id": run_id,
@@ -888,6 +920,9 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "plan_finalized": plan["plan_finalized"],
                 "planned_steps": plan["planned_steps"],
                 "required_step_ids": plan["required_step_ids"],
+                "model_summary_result": result_contract["model_summary_result"],
+                "full_result_available": result_contract["full_result_available"],
+                "full_result_row_count": result_contract["full_result_row_count"],
                 "errors": active_errors,
                 "trace": asdict(trace),
                 "failed_step_summary": failed_summary,
@@ -920,6 +955,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "total_tokens": tokens.get("total_tokens"),
                     "retrieval_scope_active": retrieval["scope_active"],
                     "retrieval_top_score": retrieval["top_score"],
+                    "full_result_available": result_contract["full_result_available"],
+                    "full_result_row_count": result_contract["full_result_row_count"],
                     "total_step_errors": metrics["total_step_errors"],
                     "blocked_calls": metrics["blocked_calls"],
                     "discovery_calls": metrics["discovery_calls"],

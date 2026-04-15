@@ -211,6 +211,11 @@ async def _model_node(state: AgentState) -> AgentState:
             state["planned_steps"] = planned_steps
             state["required_step_ids"] = required_step_ids
             state["plan_finalized"] = True
+            logger.info(
+                "      [plan] finalized required_step_ids=%s planned_steps=%s",
+                sorted(str(step_id) for step_id in required_step_ids),
+                sorted(str(step_id) for step_id in planned_steps.keys()),
+            )
 
     run_log = list(state.get("current_run_log", []))
     run_log.append({
@@ -391,6 +396,8 @@ def _finalize_node(state: AgentState) -> AgentState:
         run_logs,
         task_completed_fallback=all_executed,
         final_answer=current_answer,
+        required_step_ids=set(state.get("required_step_ids", set())),
+        plan_finalized=state.get("plan_finalized", False),
     )
 
     if not step_task_completed:
@@ -433,6 +440,9 @@ def _route_after_model(state: AgentState) -> str:
 
 def _replan_node(state: AgentState) -> AgentState:
     zero_rows_step = state.get("zero_rows_step")
+    replan_reason = state.get("replan_reason")
+    replan_error = state.get("replan_error")
+    blocked_step = state.get("last_failed_step")
     step_registry = dict(state.get("step_registry", {}))
 
     completed_lines = []
@@ -449,7 +459,50 @@ def _replan_node(state: AgentState) -> AgentState:
             row_note = "pending"
         completed_lines.append(f"  Step {k}: {v.get('action', '?')} — {row_note}")
 
-    replan_msg = f"""Step {zero_rows_step} executed successfully but returned 0 rows.
+    if replan_reason == "timeout_step":
+        replan_msg = f"""Step {blocked_step} in the finalized plan timed out during execution.
+
+Original query:
+{state.get("user_input", "")}
+
+Progress so far:
+{chr(10).join(completed_lines) if completed_lines else "  (none)"}
+
+Timeout reason:
+{replan_error or "(no reason provided)"}
+
+The current finalized plan can no longer continue as written.
+
+Produce a new numbered plan before calling any tools. Requirements:
+1. Keep the same overall task goal
+2. Replace the timed-out step with a cheaper or more targeted approach
+3. Renumber the new plan from Step 1 upward
+4. Do not repeat the exact same timed-out query
+5. Do not continue using the old finalized step numbers
+""".strip()
+    elif replan_reason == "blocked_step":
+        replan_msg = f"""Step {blocked_step} in the finalized plan was blocked before execution.
+
+Original query:
+{state.get("user_input", "")}
+
+Progress so far:
+{chr(10).join(completed_lines) if completed_lines else "  (none)"}
+
+Blocked reason:
+{replan_error or "(no reason provided)"}
+
+The current finalized plan can no longer continue as written.
+
+Produce a new numbered plan before calling any tools. Requirements:
+1. Keep the same overall task goal
+2. Replace the blocked step with a cheaper or more targeted approach
+3. Renumber the new plan from Step 1 upward
+4. Do not repeat the exact same blocked query
+5. Do not continue using the old finalized step numbers
+""".strip()
+    else:
+        replan_msg = f"""Step {zero_rows_step} executed successfully but returned 0 rows.
 
 Original query:
 {state.get("user_input", "")}
@@ -487,6 +540,8 @@ Do not repeat the exact same queries that already returned 0 rows.""".strip()
         "validated_sqls": {},
         "needs_replan": False,
         "zero_rows_step": None,
+        "replan_reason": None,
+        "replan_error": None,
         "replan_count": state.get("replan_count", 0) + 1,
         "current_ai_is_final_answer": False,
         "iter_had_error": False,

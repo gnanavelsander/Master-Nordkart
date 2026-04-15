@@ -18,6 +18,10 @@ from backend.mcp.server.models import AppContext
 # Response helpers
 # --------------------------------------------------
 
+MODEL_SAMPLE_ROWS = 5
+MODEL_MAX_COLUMNS = 20
+MODEL_MAX_CELL_CHARS = 200
+
 def _err(step: int, action: str, msg: str) -> str:
     """Consistent error response — always JSON with executed=False."""
     return json.dumps({
@@ -27,6 +31,19 @@ def _err(step: int, action: str, msg: str) -> str:
         "error": str(msg),
     })
 
+def _truncate_cell(value):
+    if isinstance(value, str) and len(value) > MODEL_MAX_CELL_CHARS:
+        return value[: MODEL_MAX_CELL_CHARS - 3] + "..."
+    return value
+
+def _sample_rows(rows: list[dict], limit: int = MODEL_SAMPLE_ROWS) -> list[dict]:
+    sampled: list[dict] = []
+    for row in rows[:limit]:
+        if not isinstance(row, dict):
+            continue
+        sampled.append({k: _truncate_cell(v) for k, v in row.items()})
+    return sampled
+
 def _ok(run_id: str, step: int, action: str, rows: list[dict]) -> str:
     columns = list(rows[0].keys()) if rows else []
     return json.dumps({
@@ -34,8 +51,11 @@ def _ok(run_id: str, step: int, action: str, rows: list[dict]) -> str:
         "run_id": run_id,
         "step": step,
         "action": action,
+        "row_count": len(rows),
         "rows_returned": len(rows),
-        "columns": columns[:20],
+        "columns": columns[:MODEL_MAX_COLUMNS],
+        "sample_rows": _sample_rows(rows),
+        "result_truncated_for_model": len(rows) > MODEL_SAMPLE_ROWS,
     }, default=str)
 # --------------------------------------------------
 # Run store helpers
