@@ -29,12 +29,8 @@ from agent_helpers import (
     _extract_plan_from_text,
     _extract_tokens,
     _fallback_answer_from_logs,
-    _format_restart_summary,
     _log_entry_key,
-    _parse_tool_result,
     _run_log_entry_from_state,
-    _sql_repair_ok,
-    _step_retry_ok,
     _short,
     _task_completed_from_steps,
     _valid_sql_from_steps,
@@ -337,8 +333,10 @@ def _restart_or_finish_node(state: AgentState) -> AgentState:
         "locked_step_ids": set(),
 
         "sql_repair_counts": {},
-
-
+        "needs_replan": False,
+        "zero_rows_step": None,
+        "replan_reason": None,
+        "replan_error": None,
 
 
     }
@@ -430,7 +428,7 @@ def _route_after_model(state: AgentState) -> str:
         return "finalize"
 
     if state["iterations"] >= state["max_iterations"]:
-        return "restart_or_finish"
+        return "finalize"  # sql_repair/restart deactivated — finalize directly
 
     return "tools"
 
@@ -562,54 +560,15 @@ Do not repeat the exact same queries that already returned 0 rows.""".strip()
 
 
 def _route_after_tools(state: AgentState) -> str:
-    # Replan takes priority — a step returned 0 rows with required steps remaining
+    # Replan takes priority — 0-rows or timeout with required steps remaining
     if state.get("needs_replan"):
         max_replans = getattr(state.get("params"), "max_replans", 1)
         if state.get("replan_count", 0) < max_replans:
             return "replan"
-        return "restart_or_finish"
-
-    iter_had_error = state.get("iter_had_error", False)
-    iter_had_validation_error = state.get("iter_had_validation_error", False)
-    iter_any_exec_ok = state.get("iter_any_exec_ok", False)
-
-    if iter_any_exec_ok and not iter_had_error:
-        return "model"
-
-    if iter_had_validation_error:
-        failing_step = state.get("last_failed_step")
-        if failing_step is not None and _sql_repair_ok(
-            state, failing_step, state["params"].max_sql_repairs
-        ):
-            return "sql_repair"
-        return "restart_or_finish"
-
-    if iter_had_error:
-        parsed_err = _parse_tool_result(state.get("last_guard_error") or state.get("last_execute_error"))
-
-        if isinstance(parsed_err, dict):
-            if str(parsed_err.get("error", "")).endswith("blocked."):
-                return "model"
-
-        failing_step = state.get("last_failed_step")
-        step_registry = state.get("step_registry", {})
-        failed_meta = step_registry.get(failing_step, {}) if failing_step is not None else {}
-        failed_action = failed_meta.get("action")
-
-        if failing_step is not None and failed_action == "query":
-            if _sql_repair_ok(state, failing_step, state["params"].max_sql_repairs):
-                return "sql_repair"
-            return "restart_or_finish"
-
-        if failing_step is not None and _step_retry_ok(
-            state, failing_step, state["params"].max_step_retries
-        ):
-            return "model"
-
-        return "restart_or_finish"
+        return "finalize"  # replan budget exhausted — finalize directly
 
     if state.get("iterations", 0) >= state.get("max_iterations", 0):
-        return "restart_or_finish"
+        return "finalize"  # sql_repair/restart deactivated — finalize directly
 
     return "model"
 

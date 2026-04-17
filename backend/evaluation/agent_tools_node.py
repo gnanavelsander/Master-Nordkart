@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -10,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # Hard timeout per step execute call (seconds). Queries that exceed this are returned
 # as a blocked error so the model can rewrite and retry with reduced data.
-EXECUTE_TIMEOUT_S = 90
+EXECUTE_TIMEOUT_S = int(os.getenv("EXECUTE_TIMEOUT_S", "300"))
 
 
 
@@ -31,7 +32,6 @@ from agent_helpers import (
     _build_snapshot,
 )
 from backend.tools.langchain_tools import (
-    kommune_where_clause,
     tool_get_available_databases,
     tool_get_available_schemas,
     tool_get_available_tables,
@@ -61,7 +61,6 @@ from backend.tools.langchain_tools import (
     tool_execute_centroid_step,
     tool_execute_transform_crs_step,
 )
-from backend.embeddings.retrieve_layers import build_filtered_catalog, is_candidate_in_scope
 
 
 
@@ -139,41 +138,10 @@ DUAL_SOURCE_ACTIONS: frozenset[str] = frozenset({
 
 
 def _normalize_tool_args(name: str, raw_args: dict, run_id: str) -> dict:
-    """
-    Inject run_id and recover flat-arg mistakes:
-    if the model sent step fields at the top level instead of nested under 'step',
-    reconstruct the correct shape automatically.
-    """
+    """Inject run_id into step tool args. Model must send correct shape."""
     args = dict(raw_args or {})
-
-    if name not in STEP_TOOLS:
-        return args
-
-    args["run_id"] = run_id
-
-    step_obj = args.get("step")
-    if isinstance(step_obj, dict):
-        return args  
-
-    # Reconstruct nested step dict from flat fields
-    normalized_step: dict = {}
-
-    if step_obj is not None:
-
-         # preserve scalar step number
-        normalized_step["step"] = step_obj 
-
-    for key in list(args.keys()):
-        if key in STEP_DICT_FIELDS and key != "step":
-            normalized_step[key] = args.pop(key)
-
-    if normalized_step:
-        args["step"] = normalized_step
-        logger.debug(
-            "      [normalize] flat args reconstructed into step dict: %s",
-            json.dumps(normalized_step, default=str)[:200],
-        )
-
+    if name in STEP_TOOLS:
+        args["run_id"] = run_id
     return args
 
 
@@ -203,55 +171,6 @@ def _lock_step(state: "AgentState", step_number: int | None) -> None:
         state["step_registry"] = step_registry
 
 
-def _check_expensive_sql(sql: str) -> str | None:
-    """
-    Return a human-readable risk reason if the SQL contains a geometry aggregate
-    (ST_Union) without a meaningful spatial or attribute pre-filter.
-
-    Returns None if the SQL looks safe or does not match known expensive patterns.
-    """
-    if not re.search(r"\bST_UNION\s*\(", sql, re.IGNORECASE):
-        return None
-
-    # Meaningful filters that make aggregation safe
-    has_spatial_pred = bool(re.search(
-        r"\bST_(INTERSECTS|DWITHIN|WITHIN|CONTAINS)\s*\(", sql, re.IGNORECASE
-    ))
-    has_bbox_op = "&&" in sql
-    has_kommune_filter = bool(re.search(
-        r"\bKOMMUNE(NUMMER|NAVN)?\s*(=|IN\b)", sql, re.IGNORECASE
-    ))
-    if has_spatial_pred or has_bbox_op or has_kommune_filter:
-        return None
-
-    # Check whether a non-trivial WHERE clause is present
-    has_real_filter = False
-    where_match = re.search(
-        r"\bWHERE\b(.*?)(?:\bGROUP\b|\bORDER\b|\bLIMIT\b|;|$)",
-        sql, re.IGNORECASE | re.DOTALL,
-    )
-    if where_match:
-        where_content = where_match.group(1).strip()
-        # Strip IS [NOT] NULL — these are not a meaningful reduction
-        cleaned = re.sub(r"\w+\s+IS\s+(?:NOT\s+)?NULL", "", where_content, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\bAND\b|\bOR\b", "", cleaned, flags=re.IGNORECASE).strip()
-        if cleaned:
-            has_real_filter = True
-
-    if has_real_filter:
-        return None
-
-    if re.search(r"\bST_BUFFER\s*\(\s*ST_UNION", sql, re.IGNORECASE):
-        return (
-            "ST_Buffer(ST_Union(...)) without a spatial or attribute pre-filter will aggregate "
-            "the entire table and is likely to time out. "
-            "Add a filter (ST_Intersects, kommunenummer=..., bounding box &&) before aggregating."
-        )
-    return (
-        "ST_Union() without a spatial or attribute pre-filter will likely be slow. "
-        "Add a WHERE filter to reduce rows before aggregating."
-    )
-
 
 def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
     step_number = args.get("step_number")
@@ -278,7 +197,9 @@ def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
             "query",
         )
 
-    if required_step_ids and str(step_number) not in required_step_ids:
+    planned_steps = state.get("planned_steps", {})
+    planned_keys = {str(k) for k in planned_steps.keys()}
+    if planned_keys and str(step_number) not in planned_keys:
         return _block_step_result(
             "tool_validate_sql",
             f"Step {step_number} is not part of the finalized plan. Validate only planned step numbers.",
@@ -359,6 +280,7 @@ def _guard_step_tool(
     required_step_ids = {
         str(step_id) for step_id in set(state.get("required_step_ids", set()))
     }
+    planned_steps = state.get("planned_steps", {})
 
     if name == "tool_execute_query_step":
         logger.info(
@@ -377,7 +299,7 @@ def _guard_step_tool(
         blocked_reason = (
             "Planning is required before execution. First produce an explicit numbered plan for the task."
         )
-    elif step_number is not None and required_step_ids and str(step_number) not in required_step_ids:
+    elif step_number is not None and planned_steps and str(step_number) not in {str(k) for k in planned_steps.keys()}:
         blocked_reason = (
             f"Step {step_number} is not part of the finalized plan. "
             "Execute only planned step numbers."
@@ -425,11 +347,6 @@ def _guard_step_tool(
                 f"Database mismatch: validated for '{validated_entry.get('database')}' "
                 f"but received '{database}'."
             )
-        else:
-            expensive_reason = _check_expensive_sql(sql)
-            if expensive_reason:
-                blocked_reason = f"Expensive query blocked: {expensive_reason}"
-
     elif blocked_reason is None:
         if step_number is None:
             blocked_reason = "step.step is required."
@@ -437,7 +354,23 @@ def _guard_step_tool(
             if step_obj.get("source_step") is None:
                 blocked_reason = "aggregate requires source_step."
             elif not step_obj.get("group_by") and not step_obj.get("aggregation_type"):
-                blocked_reason = "aggregate requires group_by or aggregation_type."
+                agg_list = step_obj.get("aggregate") or step_obj.get("aggregates")
+                has_raw_sql = isinstance(agg_list, list) and any(
+                    isinstance(a, dict) and "aggregate_sql" in a for a in agg_list
+                )
+                if has_raw_sql:
+                    blocked_reason = (
+                        "aggregate does not support 'aggregate_sql'. "
+                        "Use aggregation_type (e.g. 'count', 'sum', 'avg', 'min', 'max') "
+                        "and optionally group_by=['column'] and metric_column='col'. "
+                        "For complex spatial calculations, use tool_execute_query_step instead."
+                    )
+                else:
+                    blocked_reason = (
+                        "aggregate requires group_by or aggregation_type. "
+                        "Example: {\"action\": \"aggregate\", \"source_step\": N, "
+                        "\"group_by\": [\"kommunenavn\"], \"aggregation_type\": \"count\", \"metric_as\": \"building_count\"}"
+                    )
         elif action in SOURCE_STEP_ACTIONS and step_obj.get("source_step") is None:
             blocked_reason = f"{action} requires source_step."
         elif action in DUAL_SOURCE_ACTIONS:
@@ -589,66 +522,6 @@ def _update_step_registry(
     state["step_registry"] = step_registry
 
 
-def _infer_non_discovery_step_number(state: "AgentState", action: str) -> int | None:
-    planned_steps = dict(state.get("planned_steps", {}))
-    step_registry = dict(state.get("step_registry", {}))
-
-    action_matches = [
-        int(step_no)
-        for step_no, meta in planned_steps.items()
-        if str(meta.get("action") or "").strip() == action
-    ]
-    for step_no in sorted(action_matches):
-        if not step_registry.get(step_no, {}).get("executed", False):
-            return step_no
-
-    required_step_ids = sorted(int(step_id) for step_id in set(state.get("required_step_ids", set())))
-    for step_no in required_step_ids:
-        if not step_registry.get(step_no, {}).get("executed", False):
-            return step_no
-
-    if len(planned_steps) == 1:
-        only_step = next(iter(planned_steps.keys()))
-        return int(only_step)
-
-    return None
-
-
-def _update_non_discovery_exec_registry(
-    state: "AgentState",
-    name: str,
-    args: dict,
-    exec_ok: bool,
-    rows_returned: int,
-) -> int | None:
-    action = "route" if name == "tool_get_route" else name.replace("tool_", "")
-    step_number = _infer_non_discovery_step_number(state, action)
-    if step_number is None:
-        return None
-
-    step_registry = dict(state.get("step_registry", {}))
-    prev = dict(step_registry.get(step_number, {}))
-    if prev.get("locked"):
-        return step_number
-
-    prev.update({
-        "step": step_number,
-        "action": action,
-        "database": prev.get("database", "route") if name == "tool_get_route" else prev.get("database", ""),
-        "validated": True,
-        "executed": exec_ok,
-        "rows_returned": rows_returned,
-        "status": "ok" if exec_ok else "error",
-        "locked": prev.get("locked", False),
-        "step_payload": {
-            "step": step_number,
-            "action": action,
-            **dict(args or {}),
-        },
-    })
-    step_registry[step_number] = prev
-    state["step_registry"] = step_registry
-    return step_number
 
 
 
@@ -726,21 +599,16 @@ def _update_iteration_flags(
             list(state.get("all_errors", [])) + [json.dumps(parsed_result, ensure_ascii=False)]
         )
 
+        # Timeout means the approach must change — trigger replan
         if (
-            (is_blocked or is_execute_timeout)
-            and step_number is not None
+            is_execute_timeout
             and state.get("plan_finalized")
-            and str(step_number) in {str(s) for s in state.get("required_step_ids", set())}
             and not state.get("needs_replan")
         ):
             state["needs_replan"] = True
-            state["replan_reason"] = "timeout_step" if is_execute_timeout else "blocked_step"
-            state["replan_error"] = str(parsed_result.get("reason") or parsed_result.get("error") or "")
-            logger.info(
-                "      [replan] Step %s failed within finalized plan — flagging for replan: %s",
-                step_number,
-                state["replan_error"],
-            )
+            state["replan_reason"] = "timeout_step"
+            state["replan_error"] = str(parsed_result.get("error") or "")
+            logger.info("      [replan] Step %s timed out — flagging for replan", step_number)
 
     if exec_ok:
         state["last_executed_result"] = parsed_result
@@ -800,7 +668,7 @@ def _handle_validate_sql_tool(
         if (
             state.get("plan_finalized")
             and step_number is not None
-            and str(step_number) not in {str(s) for s in state.get("required_step_ids", set())}
+            and str(step_number) not in {str(k) for k in state.get("planned_steps", {}).keys()}
             and not state.get("needs_replan")
         ):
             state["needs_replan"] = True
@@ -903,6 +771,14 @@ def _run_retrieval_scoped_discovery_tool(
     name: str,
     args: dict,
 ) -> str | None:
+    """
+    Retrieval scope should only influence which DATABASES are suggested first.
+    Schema/table/catalog discovery inside a database must use the real MCP tools
+    unchanged so embeddings do not shrink or rewrite those results.
+
+    Returns a pre-built JSON string to short-circuit the tool call, or
+    None to let the caller invoke the real tool.
+    """
     if not state.get("retrieval_scope_active", False):
         return None
 
@@ -910,132 +786,22 @@ def _run_retrieval_scoped_discovery_tool(
     if not retrieval_candidates:
         return None
 
+    ordered_databases: list[str] = []
+    seen: set[str] = set()
+    for item in retrieval_candidates:
+        database = str(item.get("database") or "").strip()
+        if not database or database in seen:
+            continue
+        seen.add(database)
+        ordered_databases.append(database)
+
+    # Only database listing is scoped by retrieval, preserving score order.
     if name == "tool_get_available_databases":
-        databases = sorted(
-            {
-                str(item.get("database") or "").strip()
-                for item in retrieval_candidates
-                if item.get("database")
-            }
-        )
-        return json.dumps(databases, ensure_ascii=False)
-
-    if name == "tool_get_available_schemas":
-        database_name = str(args.get("databaseName") or "").strip()
-        # retrieval_candidates are DB-level objects; schema lives on supporting_tables items
-        schemas = sorted(
-            {
-                str(table_item.get("schema") or "").strip()
-                for db_candidate in retrieval_candidates
-                if db_candidate.get("database") == database_name
-                for table_item in db_candidate.get("supporting_tables", [])
-                if table_item.get("schema")
-            }
-        )
-        return json.dumps(
-            {"databaseName": database_name, "schemas": schemas},
-            ensure_ascii=False,
-        )
-
-    if name == "tool_get_available_tables":
-        database_name = str(args.get("databaseName") or "").strip()
-        schema_name = str(args.get("schemaName") or "").strip()
-        # retrieval_candidates are DB-level objects; table lives on supporting_tables items
-        tables = sorted(
-            {
-                str(table_item.get("table") or "").strip()
-                for db_candidate in retrieval_candidates
-                if db_candidate.get("database") == database_name
-                for table_item in db_candidate.get("supporting_tables", [])
-                if table_item.get("schema") == schema_name and table_item.get("table")
-            }
-        )
-        return json.dumps(
-            {
-                "databaseName": database_name,
-                "schemaName": schema_name,
-                "tables": tables,
-            },
-            ensure_ascii=False,
-        )
-
-    if name == "tool_get_database_catalog":
-        return json.dumps(
-            build_filtered_catalog(
-                retrieval_candidates,
-                database_name=args.get("databaseName"),
-                schema_name=args.get("schemaName"),
-            ),
-            ensure_ascii=False,
-        )
-
-    if name == "tool_get_table_schema":
-        database_name = str(args.get("databaseName") or "").strip()
-        schema_name = str(args.get("schemaName") or "").strip()
-        table_name = str(args.get("table_name") or "").strip()
-
-        if not is_candidate_in_scope(
-            retrieval_candidates,
-            database_name=database_name,
-            schema_name=schema_name,
-            table_name=table_name,
-        ):
-            return json.dumps(
-                {
-                    "error": (
-                        f"Table '{database_name}.{schema_name}.{table_name}' is outside the "
-                        "retrieval candidate scope. Use one of the pre-retrieved candidates first."
-                    ),
-                    "allowed_candidates": [
-                        item.get("full_name")
-                        for item in retrieval_candidates
-                        if item.get("full_name")
-                    ],
-                },
-                ensure_ascii=False,
-            )
+        return json.dumps(ordered_databases, ensure_ascii=False)
 
     return None
 
 
-def _freeze_discovery_after_plan(state: "AgentState", name: str) -> str | None:
-    if not state.get("plan_finalized", False):
-        return None
-
-    if state.get("needs_replan", False) and name in {"tool_get_table_schema", "tool_get_database_catalog"}:
-        return None
-
-    if (
-        name == "tool_get_table_schema"
-        and (
-            state.get("last_validation_error")
-            or state.get("last_guard_error")
-            or state.get("last_execute_error")
-        )
-    ):
-        return None
-
-    discovery_tools = {
-        "tool_get_available_databases",
-        "tool_get_available_schemas",
-        "tool_get_available_tables",
-        "tool_get_table_schema",
-        "tool_get_database_catalog",
-    }
-    if name not in discovery_tools:
-        return None
-
-    return json.dumps(
-        {
-            "executed": False,
-            "error": f"{name} blocked.",
-            "reason": (
-                "Discovery is frozen after planning is finalized. "
-                "Continue with the planned steps instead of further exploration."
-            ),
-        },
-        ensure_ascii=False,
-    )
 
 
 
@@ -1105,23 +871,18 @@ def _build_step_event(state: "AgentState", name: str, raw_args: dict, args: dict
 
     if name in NON_DISCOVERY_EXEC_TOOLS:
         action = "route" if name == "tool_get_route" else name.replace("tool_", "")
-        step_number = _infer_non_discovery_step_number(state, action)
-        if step_number is None:
-            return None
-
-        step_meta = dict(state.get("step_registry", {}).get(step_number, {}))
         return {
             "event_type": "execute",
-            "step": step_number,
+            "step": None,
             "action": action,
-            "database": step_meta.get("database"),
+            "database": None,
             "sql": None,
-            "validated": step_meta.get("validated", False),
-            "executed": step_meta.get("executed", False),
-            "status": step_meta.get("status"),
-            "rows_returned": step_meta.get("rows_returned"),
-            "sql_repairs": state.get("sql_repair_counts", {}).get(step_number, 0),
-            "step_retries": state.get("step_retry_counts", {}).get(step_number, 0),
+            "validated": True,
+            "executed": isinstance(parsed_result, dict) and parsed_result.get("executed", False),
+            "status": "ok" if (isinstance(parsed_result, dict) and parsed_result.get("executed", False)) else "error",
+            "rows_returned": int(parsed_result.get("rows_returned") or 0) if isinstance(parsed_result, dict) else 0,
+            "sql_repairs": 0,
+            "step_retries": 0,
             "raw_args": raw_args,
             "args": args,
             "result": parsed_result,
@@ -1171,7 +932,6 @@ def _build_step_event(state: "AgentState", name: str, raw_args: dict, args: dict
 
 def _get_tools():
     return [
-        kommune_where_clause,
         tool_get_route,
         tool_get_available_databases,
         tool_get_available_schemas,
@@ -1293,46 +1053,17 @@ async def _tools_node(state: AgentState) -> AgentState:
                     result_str = blocked_json
                 else:
                     result_str = await tool.ainvoke(args)
-                    # Flag expensive SQL patterns early so the model can self-correct
-                    # before reaching the execute guard.
-                    parsed_v = _parse_tool_result(result_str)
-                    if isinstance(parsed_v, dict) and parsed_v.get("validated") is True:
-                        expensive_reason = _check_expensive_sql((args.get("sql") or "").strip())
-                        if expensive_reason:
-                            parsed_v["expensive_query_risk"] = True
-                            parsed_v["warning"] = (
-                                f"Expensive query risk: {expensive_reason} "
-                                "Rewrite to add a pre-filter, or this step will be blocked at execution."
-                            )
-                            result_str = json.dumps(parsed_v, ensure_ascii=False)
-                            logger.warning(
-                                "      [validate] EXPENSIVE SQL step=%s: %s",
-                                args.get("step_number"), expensive_reason,
-                            )
                 _handle_validate_sql_tool(state, args, result_str, iter_flags)
 
             elif name in NON_DISCOVERY_EXEC_TOOLS:
                 result_str = await tool.ainvoke(args)
                 parsed_result = _parse_tool_result(result_str)
                 exec_ok = isinstance(parsed_result, dict) and parsed_result.get("executed", False)
-                rows_returned = 0
-                if isinstance(parsed_result, dict):
-                    rows_returned = int(parsed_result.get("rows_returned") or parsed_result.get("row_count") or 0)
-                step_number = _update_non_discovery_exec_registry(
-                    state, name, args, exec_ok, rows_returned
-                )
                 if exec_ok:
                     iter_flags["iter_any_exec_ok"] = True
-                    state["last_failed_step"] = None
-                    state["last_guard_error"] = None
-                    state["last_execute_error"] = None
                     state["last_executed_result"] = parsed_result
-                    _lock_step(state, step_number)
                 else:
                     iter_flags["iter_had_error"] = True
-                    state["last_failed_step"] = step_number
-                    state["last_guard_error"] = None
-                    state["last_execute_error"] = json.dumps(parsed_result, ensure_ascii=False)
                     state["all_errors"] = _dedup(
                         list(state.get("all_errors", [])) + [json.dumps(parsed_result, ensure_ascii=False)]
                     )
@@ -1345,13 +1076,7 @@ async def _tools_node(state: AgentState) -> AgentState:
                 if scoped_result is not None:
                     result_str = scoped_result
                 else:
-                    frozen_result = _freeze_discovery_after_plan(state, name)
-                    if frozen_result is not None:
-                        result_str = frozen_result
-                        iter_flags["iter_had_error"] = True
-                        state["last_guard_error"] = result_str
-                    else:
-                        result_str = await tool.ainvoke(args)
+                    result_str = await tool.ainvoke(args)
                 _handle_discovery_tool(state, name, args, result_str)
 
             _build_tool_message_and_log(

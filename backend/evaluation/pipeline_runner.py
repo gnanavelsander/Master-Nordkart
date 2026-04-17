@@ -45,7 +45,6 @@ from backend.mcp.client.tools_discovery import prefetch_databases
 from backend.mcp.client.tools_steps import get_step_result
 from backend.embeddings.retrieve_layers import (
     build_retrieval_context,
-    list_candidate_table_names,
     retrieve_database_candidates,
 )
 from config import EMBEDDINGS_MIN_SCORE, EMBEDDINGS_TOP_K, EMBEDDINGS_TABLE_INDEX_PATH
@@ -129,18 +128,16 @@ async def agent(
         logger.info(
             "[RETRIEVAL][%s] candidates=%s scope_active=%s top_score=%.3f",
             model_id,
-            [c.get("full_name") for c in retrieval_candidates],
+            [f"{c.get('database')}={c.get('score', -1):.3f}" for c in retrieval_candidates],
             retrieval_scope_active,
             top_score,
         )
     except Exception as e:
         logger.warning("[RETRIEVAL][%s] failed: %s", model_id, e)
 
-    seeded_databases = sorted(
-        {str(item.get("database") or "").strip() for item in retrieval_candidates if item.get("database")}
-    )
-    seeded_tables = list_candidate_table_names(retrieval_candidates)
     preferred_databases = _candidate_database_order(retrieval_candidates)
+    seeded_databases = list(preferred_databases)
+    seeded_tables: list[str] = []
 
     if preferred_databases:
         try:
@@ -476,7 +473,7 @@ async def main():
 
     queries = [
   
-                "Which five municipalities have the highest number of buildings in flood hazard zones.",
+    " Find buildings that are located in flood hazard zones, also overlap soil- and flood-landslide hazard areas, and return the matching buildings together with their municipality.",
     ]
 
     model_ids = ["gpt-5-mini"]

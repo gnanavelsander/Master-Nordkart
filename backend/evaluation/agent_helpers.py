@@ -166,10 +166,127 @@ def _normalize_step_mapping(mapping: dict | None) -> dict:
     }
 
 
+# def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
+#     raw = (text or "").strip()
+#     if not raw:
+#         return {}, set()
+
+#     lowered_raw = raw.lower()
+#     plan_headers = (
+#         "step list",
+#         "plan:",
+#         "execution plan",
+#         "query mode:",
+#         "my plan",
+#         "here is my plan",
+#         "steps:",
+#         "approach:",
+#         "following steps",
+#         "task plan",
+#         "query plan",
+#     )
+#     has_header = any(header in lowered_raw for header in plan_headers)
+#     if not has_header:
+#         return {}, set()
+
+#     _SECTION_HEADERS = (
+#         "step list", "execution plan", "plan:",
+#         "steps:", "my plan", "approach:", "following steps", "task plan", "query plan",
+#     )
+
+#     lines = [line.strip() for line in raw.splitlines() if line.strip()]
+#     planned_steps: dict = {}
+#     in_step_section = False
+
+
+
+#     def _extract_action_from_remainder(remainder: str) -> str | None:
+#         cleaned = remainder.strip().lstrip(":.- ").strip()
+#         for candidate in _PLAN_ACTIONS:
+#             variants = (candidate, candidate.replace("_", " "))
+#             if any(cleaned.startswith(variant) for variant in variants):
+#                 return candidate
+#         return None
+
+#     for line in lines:
+#         lower = line.lower()
+#         if any(header in lower for header in _SECTION_HEADERS):
+#             in_step_section = True
+#             continue
+#         if in_step_section and (
+#             "limit placement" in lower
+#             or "data volume estimate" in lower
+#             or "query mode" in lower
+#         ):
+#             continue
+#         if not in_step_section and not lower.startswith("step "):
+#             continue
+
+#         step_match = re.search(r"\bstep\s*(\d+)\b", lower)
+#         remainder = ""
+#         if not step_match:
+#             numbered_match = re.match(r"^(\d+)\.\s+", lower)
+#             if numbered_match:
+#                 step_no = int(numbered_match.group(1))
+#                 remainder = lower[numbered_match.end():]
+#             else:
+#                 continue
+#         else:
+#             step_no = int(step_match.group(1))
+#             remainder = lower[step_match.end():]
+
+#         action = _extract_action_from_remainder(remainder)
+
+#         if action is None:
+#             continue
+
+#         planned_steps[step_no] = {
+#             "step": step_no,
+#             "action": action,
+#             "description": line,
+#         }
+
+#     required_step_ids = set(planned_steps.keys())
+#     return planned_steps, required_step_ids
+
+
+
+
+
 def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
     raw = (text or "").strip()
     if not raw:
         return {}, set()
+
+    # Try JSON first
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and isinstance(parsed.get("planned_steps"), list):
+            planned_steps: dict = {}
+
+            for item in parsed["planned_steps"]:
+                if not isinstance(item, dict):
+                    continue
+
+                step_no = item.get("step")
+                action = item.get("action")
+
+                if not isinstance(step_no, int):
+                    continue
+                if not isinstance(action, str):
+                    continue
+
+                planned_steps[step_no] = {
+                    "step": step_no,
+                    "action": action,
+                    "description": item.get("purpose", ""),
+                    "database": item.get("database"),
+                }
+
+            required_step_ids = set(planned_steps.keys())
+            return planned_steps, required_step_ids
+    except Exception:
+        pass
 
     lowered_raw = raw.lower()
     plan_headers = (
@@ -186,7 +303,8 @@ def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
         "query plan",
     )
     has_header = any(header in lowered_raw for header in plan_headers)
-    if not has_header:
+    has_implicit_plan = len(re.findall(r"\bstep\s*\d+\b", lowered_raw)) >= 2
+    if not has_header and not has_implicit_plan:
         return {}, set()
 
     _SECTION_HEADERS = (
@@ -197,6 +315,14 @@ def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
     lines = [line.strip() for line in raw.splitlines() if line.strip()]
     planned_steps: dict = {}
     in_step_section = False
+
+    def _extract_action_from_remainder(remainder: str) -> str | None:
+        cleaned = remainder.strip().lstrip(":.- ").strip()
+        for candidate in _PLAN_ACTIONS:
+            variants = (candidate, candidate.replace("_", " "))
+            if any(cleaned.startswith(variant) for variant in variants):
+                return candidate
+        return None
 
     for line in lines:
         lower = line.lower()
@@ -213,22 +339,27 @@ def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
             continue
 
         step_match = re.search(r"\bstep\s*(\d+)\b", lower)
+        remainder = ""
         if not step_match:
             numbered_match = re.match(r"^(\d+)\.\s+", lower)
             if numbered_match:
                 step_no = int(numbered_match.group(1))
+                remainder = lower[numbered_match.end():]
             else:
                 continue
         else:
             step_no = int(step_match.group(1))
+            remainder = lower[step_match.end():]
 
-        action = None
-        for candidate in _PLAN_ACTIONS:
-            if candidate in lower:
-                action = candidate
-                break
-
+        action = _extract_action_from_remainder(remainder)
         if action is None:
+            # Capture discover/call/route steps in planned_steps but not required_step_ids
+            planned_steps[step_no] = {
+                "step": step_no,
+                "action": "discover",
+                "description": line,
+                "is_discover": True,
+            }
             continue
 
         planned_steps[step_no] = {
@@ -237,8 +368,21 @@ def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
             "description": line,
         }
 
-    required_step_ids = set(planned_steps.keys())
+    # Only execution steps are required — discover steps are informational
+    required_step_ids = {k for k, v in planned_steps.items() if not v.get("is_discover", False)}
     return planned_steps, required_step_ids
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _collect_step_stats(run_logs: list | None) -> tuple[dict, dict, dict]:
@@ -368,13 +512,10 @@ def _task_completed_from_steps(
         if step.get("step") is not None
     }
 
-    if required_ids:
-        for step_id in required_ids:
-            outcome = outcome_by_step.get(step_id)
-            if not outcome:
-                return False
-            if not outcome.get("executed", False) or outcome.get("status") != "ok":
-                return False
+    # Require that at least one execution step ran — don't require specific step numbers
+    # (model may legitimately skip/renumber discover steps)
+    if not outcome_by_step:
+        return False
 
     steps_ok = all(step.get("executed", False) and step.get("status") == "ok" for step in outcomes)
     if not steps_ok:

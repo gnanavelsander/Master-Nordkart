@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { MapContainer, TileLayer, GeoJSON as RLGeoJSON, FeatureGroup } from "react-leaflet";
+import { useEffect, useState } from "react";
+import { MapContainer, TileLayer, GeoJSON as RLGeoJSON, FeatureGroup, useMap } from "react-leaflet";
 import { EditControl } from "react-leaflet-draw";
 import type { Feature, FeatureCollection, Polygon, MultiPolygon } from "geojson";
 import { circleMarker, type CircleMarkerOptions, type PathOptions, type StyleFunction } from "leaflet";
@@ -96,6 +96,51 @@ const POINT_STYLES: Record<BasemapMode, CircleMarkerOptions> = {
   },
 };
 
+function MapResizeHandler() {
+  const map = useMap();
+
+  useEffect(() => {
+    let disposed = false;
+    const container = map.getContainer();
+
+    const refreshMapSize = () => {
+      window.requestAnimationFrame(() => {
+        const leafletMap = map as typeof map & { _loaded?: boolean };
+        if (disposed) return;
+        if (!container?.isConnected) return;
+        if (!leafletMap._loaded) return;
+        if (!map.getPanes()?.mapPane) return;
+        map.invalidateSize({ pan: false });
+      });
+    };
+
+    map.whenReady(() => {
+      if (!disposed) refreshMapSize();
+    });
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", refreshMapSize);
+      return () => {
+        disposed = true;
+        window.removeEventListener("resize", refreshMapSize);
+      };
+    }
+
+    const observer = new ResizeObserver(() => {
+      refreshMapSize();
+    });
+
+    observer.observe(container);
+
+    return () => {
+      disposed = true;
+      observer.disconnect();
+    };
+  }, [map]);
+
+  return null;
+}
+
 export default function MapView({ geojson, onDraw, onFeatureSelect }: Props) {
   const [basemapMode, setBasemapMode] = useState<BasemapMode>("light");
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
@@ -150,6 +195,7 @@ export default function MapView({ geojson, onDraw, onFeatureSelect }: Props) {
         zoom={12}
         className="h-full w-full rounded-lg"
       >
+        <MapResizeHandler />
         <TileLayer
           url={basemap.url}
           attribution={basemap.attribution}

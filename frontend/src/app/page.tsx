@@ -8,7 +8,63 @@ import ResultTable from "./ResultTable";
 type ChatMessage = { role: "user" | "agent"; text: string; results?: any[] };
 type ConvTurn = { question: string; answer: string | null; sql: string | null; summary: string | null };
 
+const PROMPT_OPTIONS = ["prompt_v1", "prompt_v2", "prompt_v3", "prompt_v4"] as const;
+type PromptName = (typeof PROMPT_OPTIONS)[number];
+
+function getOrCreateAssistantSessionId(): string {
+  if (typeof window === "undefined") return "demo-session";
+  const key = "assistant-demo-session-id";
+  const existing = window.localStorage.getItem(key);
+  if (existing) return existing;
+  const nextId =
+    typeof window.crypto !== "undefined" && "randomUUID" in window.crypto
+      ? window.crypto.randomUUID()
+      : `demo-${Date.now()}`;
+  window.localStorage.setItem(key, nextId);
+  return nextId;
+}
+
+function getAssistantApiBases(): string[] {
+  const configured =
+    process.env.NEXT_PUBLIC_EVALUATION_API_BASE?.trim() ||
+    process.env.NEXT_PUBLIC_ASSISTANT_API_BASE?.trim();
+  const bases = new Set<string>();
+
+  if (configured) {
+    bases.add(configured.replace(/\/$/, ""));
+  }
+
+  if (typeof window !== "undefined") {
+    const { protocol, hostname } = window.location;
+    bases.add(`${protocol}//${hostname}:8000`);
+    bases.add(`${protocol}//localhost:8000`);
+  } else {
+    bases.add("http://localhost:8000");
+  }
+
+  return Array.from(bases);
+}
+
+async function fetchAssistant(path: string, init?: RequestInit): Promise<Response> {
+  let lastError: unknown = null;
+
+  for (const base of getAssistantApiBases()) {
+    try {
+      return await fetch(`${base}${path}`, init);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    lastError instanceof Error
+      ? `${lastError.message}\n\nStart evaluation backend with: uvicorn backend.app:app --reload --port 8000`
+      : "Could not reach evaluation backend. Start it with: uvicorn backend.app:app --reload --port 8000"
+  );
+}
+
 export default function Page() {
+  const [sessionId, setSessionId] = useState<string>("demo-session");
   const [geojson, setGeojson] = useState<FeatureCollection | undefined>();
   const [aoi, setAoi] = useState<Geometry | null>(null);
   const [selectedFeature, setSelectedFeature] = useState<Feature | null>(null);
@@ -25,6 +81,7 @@ export default function Page() {
   const [rightTab, setRightTab] = useState<"sql" | "prompt" | "log" | "errors">("sql");
   const [promptContent, setPromptContent] = useState<string>("");
   const [promptSaved, setPromptSaved] = useState(false);
+  const [selectedPrompt, setSelectedPrompt] = useState<PromptName>("prompt_v4");
   // per-step edited SQL: { [modelId]: { [stepKey]: string } }
   const [editedSql, setEditedSql] = useState<Record<string, Record<string, string>>>({});
   const [expandedStep, setExpandedStep] = useState<Record<string, string | null>>({});
@@ -46,17 +103,15 @@ export default function Page() {
 
   // table view per model
   const [tableModel, setTableModel] = useState<string | null>(null);
-  const [runMode, setRunMode] = useState<"assistant" | "eval">("assistant");
+  const runMode = "assistant";
 
-  function pickPrimaryResult(results: any[], mode: "assistant" | "eval", bestModelId?: string | null) {
+  function pickPrimaryResult(results: any[], bestModelId?: string | null) {
     if (!results.length) return null;
-    if (mode === "eval") {
-      return results.find((r: any) => r.model_id === bestModelId) ?? results[0];
-    }
     return (
       results.find((r: any) => r.final_answer) ??
       results.find((r: any) => r.executed || r.task_completed) ??
       results.find((r: any) => r.valid_sql) ??
+      results.find((r: any) => r.model_id === bestModelId) ??
       results[0]
     );
   }
@@ -79,13 +134,15 @@ export default function Page() {
     setLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8000/query", {
+      const res = await fetchAssistant("/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question: userMessage,
+          session_id: sessionId,
           models: selectedModels,
           mode: runMode,
+          prompt: selectedPrompt,
           aoi,
           selectedFeature,
           history: convHistory,
@@ -97,6 +154,13 @@ export default function Page() {
 
       //convert response to jason
       const data = await res.json();
+      if (data.session_id) {
+        const nextSessionId = String(data.session_id);
+        setSessionId(nextSessionId);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("assistant-demo-session-id", nextSessionId);
+        }
+      }
       if (!res.ok || data.error) {
         const errorText = data.error ? String(data.error) : `Request failed with status ${res.status}`;
         setMessages((prev) => [
@@ -109,7 +173,7 @@ export default function Page() {
       const results = Array.isArray(data.results) ? data.results : [];
       setLastResult(results);
 
-      const best = pickPrimaryResult(results, runMode, data.best_model);
+      const best = pickPrimaryResult(results, data.best_model);
 
         // Set chosen result as default on the map 
       if (best) {
@@ -124,9 +188,7 @@ export default function Page() {
         ? best.final_answer
         : bestError
         ? `Jeg fikk ikke kjørt oppgaven helt ennå.\n\n${bestError}`
-        : runMode === "eval" && bestRanAnything && best
-        ? `Kjørt. Best model: ${best.model_id} (${best.latency_s}s, ${best.iterations} iterations)`
-        : runMode === "assistant" && bestRanAnything
+        : bestRanAnything
         ? "Jeg jobber videre med dette, men har ikke et fullført svar ennå."
         : "Ingen modell klarte å fullføre oppgaven.";
 
@@ -152,6 +214,12 @@ export default function Page() {
             : "No result.",
         },
       ]);
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : "Failed to fetch";
+      setMessages((prev) => [
+        ...prev,
+        { role: "agent", text: `Jeg fikk ikke kontakt med assistant-backenden.\n\n${errorText}` },
+      ]);
     } finally {
       setLoading(false);
     }
@@ -170,16 +238,20 @@ export default function Page() {
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
 
   useEffect(() => {
-    if (rightTab === "prompt" && !promptContent) {
-      fetch("http://localhost:8000/prompt/prompt_v1")
+    setSessionId(getOrCreateAssistantSessionId());
+  }, []);
+
+  useEffect(() => {
+    if (rightTab === "prompt") {
+      fetchAssistant(`/prompt/${selectedPrompt}`)
         .then((r) => r.json())
         .then((data) => setPromptContent(data.content ?? ""))
         .catch(() => {});
     }
-  }, [rightTab]);
+  }, [rightTab, selectedPrompt]);
 
   useEffect(() => {
-    fetch("http://localhost:8000/models")
+    fetchAssistant("/models")
       .then((r) => r.json())
       .then((data) => {
         const models: string[] = data.models ?? [];
@@ -385,7 +457,7 @@ function showTable(r: any) {
         </div>
 
         {/* SQL / queries / metrics panel */}
-        <div className="sticky top-8 justify-self-end w-[660px] min-w-0 h-full flex flex-col border border-gray-700 rounded-2xl bg-[#0d0d0d]">
+        <div className="sticky top-8 justify-self-end w-[660px] min-w-0 h-full overflow-hidden flex flex-col border border-gray-700 rounded-2xl bg-[#0d0d0d]">
 
           {/* Tabs */}
           <div className="flex border-b border-gray-700">
@@ -485,10 +557,26 @@ function showTable(r: any) {
             {rightTab === "prompt" && (
               <div className="flex flex-col gap-3 h-full">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-400">prompt_v1.txt</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400">Prompt</span>
+                    <select
+                      value={selectedPrompt}
+                      onChange={(e) => {
+                        setSelectedPrompt(e.target.value as PromptName);
+                        setPromptSaved(false);
+                      }}
+                      className="rounded border border-gray-700 bg-zinc-900 px-2 py-1 text-xs text-white"
+                    >
+                      {PROMPT_OPTIONS.map((promptName) => (
+                        <option key={promptName} value={promptName}>
+                          {promptName}.txt
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <button
                     onClick={async () => {
-                      await fetch("http://localhost:8000/prompt/prompt_v1", {
+                      await fetchAssistant(`/prompt/${selectedPrompt}`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ content: promptContent }),
@@ -511,12 +599,12 @@ function showTable(r: any) {
 
             {/* LOG TAB */}
             {rightTab === "log" && (
-              <div className="space-y-4 min-w-0">
+              <div className="h-full min-w-0 space-y-4">
                 {!lastResult && <p className="text-xs text-gray-500">Ingen kjøring ennå.</p>}
                 {lastResult?.map((r: any) => (
-                  <div key={r.model_id} className="min-w-0 overflow-hidden rounded-xl border border-gray-800 bg-zinc-950/50 p-3">
+                  <div key={r.model_id} className="w-full min-w-0 overflow-hidden rounded-xl border border-gray-800 bg-zinc-950/50 p-3">
                     {r.full_log ? (
-                      <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words text-xs font-mono leading-relaxed text-gray-300">
+                      <pre className="w-full min-w-0 overflow-x-auto whitespace-pre-wrap break-all text-xs font-mono leading-relaxed text-gray-300">
                         {r.full_log}
                       </pre>
                     ) : (
@@ -566,27 +654,6 @@ function showTable(r: any) {
         </div>
       </div>
 
-      <div className="fixed bottom-14 left-3 z-[600]">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="flex h-7 w-7 items-center justify-center rounded-full border border-zinc-600 bg-zinc-900 text-xs font-semibold text-white"
-            aria-label="Mode"
-          >
-            M
-          </button>
-          <select
-            id="run-mode"
-            value={runMode}
-            onChange={(e) => setRunMode(e.target.value as "assistant" | "eval")}
-            className="bg-transparent px-1 py-1 text-sm text-white outline-none"
-            aria-label="Run mode"
-          >
-            <option value="assistant">assistant</option>
-            <option value="eval">eval</option>
-          </select>
-        </div>
-      </div>
     </div>
   );
 }

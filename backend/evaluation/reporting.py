@@ -29,6 +29,7 @@ from backend.storage.AzureBlobStorage import (
     query_meta_exists,
     _update_queries_index,
     _update_runs_index,
+    src as STORAGE_VERSION,
 )
 
 logger = logging.getLogger(__name__)
@@ -727,9 +728,7 @@ async def store_run(run: EvalRun, results: list) -> str:
     run_id = uuid.uuid4().hex
 
 
-    src = "storage13.4"
-
-    base = f"{src}/{q_hash}/runs/{run_id}"
+    base = f"{STORAGE_VERSION}/{q_hash}/runs/{run_id}"
 
     loop = asyncio.get_running_loop()
 
@@ -743,7 +742,7 @@ async def store_run(run: EvalRun, results: list) -> str:
         _update_queries_index(q_hash, run.query)
         if not query_meta_exists(q_hash):
             await _upload(
-                f"{src}/{q_hash}/meta.json",
+                f"{STORAGE_VERSION}/{q_hash}/meta.json",
                 {"query": run.query, "query_hash": q_hash},
             )
     except Exception as e:
@@ -935,9 +934,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "sql": r.final_sql,
                     "result_data": r.result_data,
                 },
+                "total_tool_calls": trace.total_tool_calls,
                 "run_logs": r.run_logs or [],
-                
-      
             }
 
             summary.append(
@@ -984,7 +982,7 @@ async def store_run(run: EvalRun, results: list) -> str:
     )
 
     try:
-        _update_runs_index(q_hash, run_id, summary, run.params)
+        _update_runs_index(q_hash, run_id, summary)
     except Exception as e:
         logger.warning("Failed to update runs index: %s", e)
 
