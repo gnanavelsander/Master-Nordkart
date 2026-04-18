@@ -166,89 +166,6 @@ def _normalize_step_mapping(mapping: dict | None) -> dict:
     }
 
 
-# def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
-#     raw = (text or "").strip()
-#     if not raw:
-#         return {}, set()
-
-#     lowered_raw = raw.lower()
-#     plan_headers = (
-#         "step list",
-#         "plan:",
-#         "execution plan",
-#         "query mode:",
-#         "my plan",
-#         "here is my plan",
-#         "steps:",
-#         "approach:",
-#         "following steps",
-#         "task plan",
-#         "query plan",
-#     )
-#     has_header = any(header in lowered_raw for header in plan_headers)
-#     if not has_header:
-#         return {}, set()
-
-#     _SECTION_HEADERS = (
-#         "step list", "execution plan", "plan:",
-#         "steps:", "my plan", "approach:", "following steps", "task plan", "query plan",
-#     )
-
-#     lines = [line.strip() for line in raw.splitlines() if line.strip()]
-#     planned_steps: dict = {}
-#     in_step_section = False
-
-
-
-#     def _extract_action_from_remainder(remainder: str) -> str | None:
-#         cleaned = remainder.strip().lstrip(":.- ").strip()
-#         for candidate in _PLAN_ACTIONS:
-#             variants = (candidate, candidate.replace("_", " "))
-#             if any(cleaned.startswith(variant) for variant in variants):
-#                 return candidate
-#         return None
-
-#     for line in lines:
-#         lower = line.lower()
-#         if any(header in lower for header in _SECTION_HEADERS):
-#             in_step_section = True
-#             continue
-#         if in_step_section and (
-#             "limit placement" in lower
-#             or "data volume estimate" in lower
-#             or "query mode" in lower
-#         ):
-#             continue
-#         if not in_step_section and not lower.startswith("step "):
-#             continue
-
-#         step_match = re.search(r"\bstep\s*(\d+)\b", lower)
-#         remainder = ""
-#         if not step_match:
-#             numbered_match = re.match(r"^(\d+)\.\s+", lower)
-#             if numbered_match:
-#                 step_no = int(numbered_match.group(1))
-#                 remainder = lower[numbered_match.end():]
-#             else:
-#                 continue
-#         else:
-#             step_no = int(step_match.group(1))
-#             remainder = lower[step_match.end():]
-
-#         action = _extract_action_from_remainder(remainder)
-
-#         if action is None:
-#             continue
-
-#         planned_steps[step_no] = {
-#             "step": step_no,
-#             "action": action,
-#             "description": line,
-#         }
-
-#     required_step_ids = set(planned_steps.keys())
-#     return planned_steps, required_step_ids
-
 
 
 
@@ -258,10 +175,28 @@ def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
     if not raw:
         return {}, set()
 
-    # Try JSON first
+    # Try JSON first — extract outermost JSON object to handle mixed text (prefix + JSON + suffix)
+    def _parse_plan_json(text: str) -> dict | None:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and isinstance(parsed.get("planned_steps"), list):
+                return parsed
+        except Exception:
+            pass
+        import re as _re
+        m = _re.search(r'\{.*\}', text, _re.DOTALL)
+        if m:
+            try:
+                parsed = json.loads(m.group())
+                if isinstance(parsed, dict) and isinstance(parsed.get("planned_steps"), list):
+                    return parsed
+            except Exception:
+                pass
+        return None
+
     try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict) and isinstance(parsed.get("planned_steps"), list):
+        parsed = _parse_plan_json(raw)
+        if parsed is not None and isinstance(parsed.get("planned_steps"), list):
             planned_steps: dict = {}
 
             for item in parsed["planned_steps"]:
@@ -486,6 +421,7 @@ def _task_completed_from_steps(
     final_answer: str | None = None,
     required_step_ids: set | list | None = None,
     plan_finalized: bool = False,
+    planned_steps: dict | None = None,
 ) -> bool:
     required_ids = {
         _normalize_step_key(step_id)
@@ -512,14 +448,55 @@ def _task_completed_from_steps(
         if step.get("step") is not None
     }
 
-    # Require that at least one execution step ran — don't require specific step numbers
-    # (model may legitimately skip/renumber discover steps)
     if not outcome_by_step:
         return False
 
     steps_ok = all(step.get("executed", False) and step.get("status") == "ok" for step in outcomes)
     if not steps_ok:
         return False
+
+    if planned_steps and required_ids:
+        ok_step_ids = {
+            k for k, v in outcome_by_step.items()
+            if v.get("executed") and v.get("status") == "ok"
+        }
+        query_required_ids = {
+            _normalize_step_key(step_id)
+            for step_id, step_meta in planned_steps.items()
+            if step_meta.get("action") == "query"
+            and _normalize_step_key(step_id) in required_ids
+        }
+        # Required non-query actions (spatial_join, aggregate, etc.) — checked by
+        # action type rather than step id to handle model renumbering.
+        required_non_query_actions = {
+            step_meta.get("action")
+            for step_id, step_meta in planned_steps.items()
+            if step_meta.get("action") not in ("query", "discover")
+            and _normalize_step_key(step_id) in required_ids
+        }
+        executed_non_query_actions = {
+            v.get("action")
+            for v in outcome_by_step.values()
+            if v.get("executed") and v.get("status") == "ok"
+            and v.get("action") not in ("query", "discover")
+        }
+
+        # Non-query steps (spatial_join, aggregate) must have run when required.
+        if required_non_query_actions and not (required_non_query_actions & executed_non_query_actions):
+            return False
+
+        # Query steps:
+        # - Single required query with no non-query steps → lenient (intersection).
+        #   A single ok query is enough for simple single-db lookups.
+        # - Multiple required steps → all required query steps must have run (issubset).
+        if query_required_ids:
+            single_query_task = len(required_ids) == 1 and not required_non_query_actions
+            if single_query_task:
+                if not (query_required_ids & ok_step_ids):
+                    return False
+            else:
+                if not query_required_ids.issubset(ok_step_ids):
+                    return False
 
     if _answer_indicates_incomplete_task(final_answer):
         return False
@@ -550,14 +527,10 @@ def _render_final_sql(
         if not action:
             continue
 
-        payload.pop("sql", None)
-        payload.pop("validSql", None)
         compact_payload = {
             k: v for k, v in payload.items()
             if v not in (None, "", [], {})
         }
-        compact_payload.pop("action", None)
-        compact_payload.pop("step", None)
 
         step_lines = [f"-- STEP {step_no}: {action}"]
         if compact_payload:
@@ -622,6 +595,14 @@ def _run_log_entry_from_state(state: "AgentState") -> dict:
         },
         "sql_repairs_used": sum(sql_repair_counts.values()),
         "sql_repair_counts": sql_repair_counts,
+        "step_retries_used": sum(step_retry_counts.values()),
+        "step_retry_counts": step_retry_counts,
+        "replan_count": state.get("replan_count", 0),
+        "replan_trigger": state.get("replan_reason"),
+        "replan_trigger_detail": state.get("replan_error"),
+        "replan_trigger_step": state.get("last_failed_step"),
+        "replan_trigger_action": state.get("replan_trigger_action"),
+        "replan_trigger_blocked_count": state.get("replan_trigger_blocked_count"),
         "iterations": list(state.get("current_run_log", [])),
         "final_sql": final_sql,
         "validation_error": state.get("last_validation_error"),
@@ -631,7 +612,6 @@ def _run_log_entry_from_state(state: "AgentState") -> dict:
         "discovered_databases": list(state.get("discovered_databases", [])),
         "attempt_tokens": dict(state.get("attempt_tokens", _empty_token_dict())),
         "step_registry": normalized_step_registry,
-        "step_retry_counts": step_retry_counts,
     }
 
 
@@ -680,6 +660,7 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
         final_answer=state.get("answer") or _fallback_answer_from_logs(run_logs),
         required_step_ids=set(state.get("required_step_ids", set())),
         plan_finalized=state.get("plan_finalized", False),
+        planned_steps=dict(state.get("planned_steps", {})),
     )
 
     steps = state.get("step_registry", {})

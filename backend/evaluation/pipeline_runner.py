@@ -30,6 +30,7 @@ from agent_helpers import (
     _accumulate_retry_snapshots,
     _build_snapshot,
     _dedup,
+    _dedup_logs,
     _empty_token_dict,
     _executed_from_steps,
     _is_rate_limit_error,
@@ -170,7 +171,6 @@ async def agent(
         "sql_repair_count": 0,
         "max_sql_repairs": params.max_sql_repairs,
         "restart_count": 0,
-        "max_restarts": params.max_restarts,
         "current_run_log": [],
         "all_run_logs": [],
         "attempt_tokens": _empty_token_dict(),
@@ -211,7 +211,6 @@ async def agent(
         "total_step_retries": 0,
         "step_retry_counts": {},
         "last_failed_step": None,
-        "plan_locked": False,
         "locked_step_ids": set(),
         "retrieval_candidates": retrieval_candidates,
         "retrieval_scope_active": retrieval_scope_active,
@@ -222,11 +221,19 @@ async def agent(
         "needs_replan": False,
         "zero_rows_step": None,
         "replan_count": 0,
+        "unplanned_step_block_counts": {},
     }
 
     state = init_state
+    expanded_result_data: dict | None = None
     try:
         state = await get_agent_graph().ainvoke(init_state)
+        # Expand the last executed result BEFORE cleanup_run deletes the step data.
+        # _expand_result_for_frontend fetches full rows via get_step_result, which
+        # would return an error after cleanup_run runs — so this must happen here.
+        expanded_result_data = await _expand_result_for_frontend(
+            state.get("last_executed_result")
+        )
     except Exception as e:
         if isinstance(e, AgentRunError):
             raise
@@ -265,6 +272,7 @@ async def agent(
         final_answer=state.get("answer"),
         required_step_ids=set(state.get("required_step_ids", set())),
         plan_finalized=state.get("plan_finalized", False),
+        planned_steps=dict(state.get("planned_steps", {})),
     )
     final_sql = _render_final_sql(
         steps,
@@ -275,7 +283,7 @@ async def agent(
     return AgentResult(
         answer=state["answer"],
         sql=final_sql,
-        result_data=state.get("last_executed_result"),
+        result_data=expanded_result_data,
         executed=executed,
         valid_sql=valid_sql,
         sql_repairs_used=state.get("total_sql_repairs", 0),
@@ -315,13 +323,12 @@ async def pipeline(
         aoi_context=aoi_context,
         history_context=history_context,
     )
-    full_result_data = await _expand_result_for_frontend(result.result_data)
 
     return PipelineResult(
         model_id=model_id,
         final_answer=result.answer,
         final_sql=result.sql,
-        result_data=full_result_data,
+        result_data=result.result_data,
         valid_sql=result.valid_sql,
         executed=result.executed,
         iterations=result.iterations,
@@ -365,6 +372,7 @@ async def _run_one_with_retry(
             "discovered_databases": [],
             "discovered_tables": [],
             "plan_finalized": False,
+            "plan_block_count": 0,
             "planned_steps": {},
             "required_step_ids": [],
             "retrieval": {
@@ -377,6 +385,10 @@ async def _run_one_with_retry(
             "last_execute_error": None,
         }
 
+        prior_tokens = _empty_token_dict()
+        prior_iterations = 0
+        prior_run_logs: list = []
+
         for attempt in range(retries + 1):
             try:
                 result = await pipeline(
@@ -388,6 +400,17 @@ async def _run_one_with_retry(
                     aoi_context=aoi_context,
                     history_context=history_context,
                 )
+                # Carry forward cost data from failed 429 attempts
+                if attempt > 0:
+                    if result.tokens:
+                        result.tokens = TokenUsage(
+                            prompt_tokens=result.tokens.prompt_tokens + prior_tokens["prompt_tokens"],
+                            completion_tokens=result.tokens.completion_tokens + prior_tokens["completion_tokens"],
+                            total_tokens=result.tokens.total_tokens + prior_tokens["total_tokens"],
+                        )
+                    result.iterations += prior_iterations
+                    if prior_run_logs and result.run_logs is not None:
+                        result.run_logs = prior_run_logs + result.run_logs
                 return result
 
             except Exception as e:
@@ -400,6 +423,16 @@ async def _run_one_with_retry(
                 )
 
                 if _is_rate_limit_error(e) and attempt < retries:
+                    # Save cost data from this failed attempt before retrying
+                    snap_tokens = current_snapshot.get("tokens") or _empty_token_dict()
+                    prior_tokens = {
+                        k: prior_tokens[k] + snap_tokens.get(k, 0)
+                        for k in ("prompt_tokens", "completion_tokens", "total_tokens")
+                    }
+                    prior_iterations += current_snapshot.get("iterations", 0)
+                    prior_run_logs = _dedup_logs(
+                        prior_run_logs + list(current_snapshot.get("run_logs", []))
+                    )
                     accumulated_snapshot["all_errors"] = _dedup(
                         list(accumulated_snapshot.get("all_errors", [])) + [str(e)]
                     )
@@ -445,6 +478,7 @@ async def run_all(
             params=params,
             prompt=prompt,
             sem=sem,
+            retries=params.max_retries,
             aoi_context=aoi_context,
             history_context=history_context,
         )
@@ -471,11 +505,14 @@ async def main():
     setup_logging()
     logger.setLevel(logging.DEBUG)
 
-    queries = [
-  
-    " Find buildings that are located in flood hazard zones, also overlap soil- and flood-landslide hazard areas, and return the matching buildings together with their municipality.",
-    ]
+ 
+    queries = {
+        "B21": "Count all buildings in flood hazard areas in Kristiansand municipality.",
 
+}
+
+
+    
     model_ids = ["gpt-5-mini"]
 
     params = ModelParams(
@@ -485,16 +522,17 @@ async def main():
         max_retries=0,
         max_iterations=50,
         max_sql_repairs=3,
-        max_restarts=2,
+        max_step_retries=3,
+        max_replans=2,
     )
 
-    prompt_name = "prompt_v1"
+    prompt_name = "evaluation_v1"
     prompt = load_prompt(prompt_name)
 
     try:
-        for q_idx, query in enumerate(queries, start=1):
+        for q_idx, (q_id, query) in enumerate(queries.items(), start=1):
             logger.info("=" * 120)
-            logger.info("QUERY %s/%s: %s", q_idx, len(queries), query)
+            logger.info("QUERY %s/%s [%s]: %s", q_idx, len(queries), q_id, query)
             logger.info("=" * 120)
 
             run = EvalRun(
@@ -502,6 +540,7 @@ async def main():
                 model_ids=model_ids,
                 prompt_name=prompt_name,
                 params=params,
+                query_id=q_id,
             )
 
             results = await run_all(

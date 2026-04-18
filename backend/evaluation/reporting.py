@@ -236,7 +236,7 @@ def _active_errors_for_result(result: PipelineResult) -> list[str]:
 
 def _summary_metrics(run_logs: list | None, trace: AgentTrace | None = None) -> dict:
     run_logs = run_logs or []
-    step_registry, sql_repairs_by_step, _ = _collect_step_stats(run_logs)
+    step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(run_logs)
 
     total_step_errors = 0
     blocked_calls = 0
@@ -280,30 +280,52 @@ def _summary_metrics(run_logs: list | None, trace: AgentTrace | None = None) -> 
             else:
                 seen_query_keys.add(key)
 
-    repaired_step_pairs = [
-        [int(step_no) if str(step_no).isdigit() else step_no, count]
-        for step_no, count in sorted(
+    sql_repairs_by_step_clean = {
+        str(k): v for k, v in sorted(
             sql_repairs_by_step.items(),
             key=lambda x: int(x[0]) if str(x[0]).isdigit() else str(x[0]),
-        )
-        if count > 0
-    ]
-    repaired_steps = [step for step, _ in repaired_step_pairs]
-    repaired_step_counts = {str(step): count for step, count in repaired_step_pairs}
+        ) if v > 0
+    }
+    step_retries_by_step_clean = {str(k): v for k, v in step_retries_by_step.items() if v > 0}
 
     if trace is not None and trace.databases_in_result:
         db_count_used = len(trace.databases_in_result)
     else:
         db_count_used = len(dbs_used)
 
+    replan_count = max((run.get("replan_count", 0) for run in run_logs), default=0)
+
+    replan_events: list[dict] = []
+    for run in run_logs:
+        trigger = run.get("replan_trigger")
+        if trigger:
+            replan_events.append({
+                "trigger": trigger,
+                "step": run.get("replan_trigger_step"),
+                "action": run.get("replan_trigger_action"),
+                "blocked_count": run.get("replan_trigger_blocked_count"),
+                "detail": run.get("replan_trigger_detail"),
+                "replan_index": run.get("replan_count", 0),
+            })
+
     return {
+        "guard_stats": {
+            "sql_repairs": {
+                "total": sum(sql_repairs_by_step_clean.values()),
+                "by_step": sql_repairs_by_step_clean,
+            },
+            "step_retries": {
+                "total": sum(step_retries_by_step_clean.values()),
+                "by_step": step_retries_by_step_clean,
+            },
+            "replans": replan_count,
+            "blocked_calls": blocked_calls,
+            "replan_events": replan_events,
+        },
         "total_step_errors": total_step_errors,
-        "blocked_calls": blocked_calls,
         "discovery_calls": discovery_calls,
         "redundant_steps": redundant_steps,
         "db_count_used": db_count_used,
-        "repaired_steps": repaired_steps,
-        "repaired_step_counts": repaired_step_counts,
     }
 
 
@@ -317,6 +339,7 @@ def _extract_agent_trace_from_run_logs(
     tool_call_counts: dict[str, int] = {}
     executions: list[dict] = []
     merged_step_registry: dict = {}
+    step_to_iteration: dict[str, int | None] = {}
 
     if not run_logs:
         return AgentTrace(
@@ -344,16 +367,20 @@ def _extract_agent_trace_from_run_logs(
             merged_step_registry[step_no] = meta
 
         for entry in (run.get("iterations") or []):
+            iter_no = entry.get("iteration")
             for t in entry.get("tools", []):
                 total_tool_calls += 1
                 tool_name = t.get("tool")
                 if tool_name:
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
+            for evt in (entry.get("step_events") or []):
+                if evt.get("event_type") == "execute" and evt.get("step") is not None:
+                    step_to_iteration[str(evt.get("step"))] = iter_no
 
     for step_no, meta in _sorted_step_items(merged_step_registry):
         executions.append(
             {
-                "iteration": None,
+                "iteration": step_to_iteration.get(str(step_no)),
                 "step": step_no,
                 "action": meta.get("action"),
                 "database": meta.get("database"),
@@ -433,14 +460,15 @@ def _print_summary(query: str, results: list):
     logger.info("#" * 130)
 
     logger.info(
-        "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-10s %-8s %-10s %s",
+        "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-8s %-10s %-8s %-10s %s",
         "MODEL",
         "SQL_OK",
         "EXEC",
         "TASK_OK",
         "ITER",
         "REP",
-        "RST",
+        "RETRY",
+        "REPLAN",
         "LATENCY",
         "TOOLS",
         "TOKENS",
@@ -451,34 +479,29 @@ def _print_summary(query: str, results: list):
     for r in results:
         if isinstance(r, Exception):
             logger.info(
-                "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-10s %-8s %-10s %s",
-                "ERROR",
-                "False",
-                "False",
-                "False",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
+                "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-8s %-10s %-8s %-10s %s",
+                "ERROR", "False", "False", "False",
+                "-", "-", "-", "-", "-", "-", "-",
                 _short(str(r), 300),
             )
             continue
 
+        metrics = _summary_metrics(r.run_logs or [])
+        g = metrics["guard_stats"]
         trace = extract_agent_trace(r)
         err = "; ".join(_active_errors_for_result(r)) or "-"
         total_tokens = r.tokens.total_tokens if r.tokens else "-"
 
         logger.info(
-            "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-10s %-8s %-10s %s",
+            "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-8s %-10s %-8s %-10s %s",
             r.model_id,
             str(r.valid_sql),
             str(r.executed),
             str(r.task_completed),
             r.iterations,
-            r.sql_repairs_used,
-            r.restarts_used,
+            g["sql_repairs"]["total"],
+            g["step_retries"]["total"],
+            g["replans"],
             f"{r.latency_s:.3f}s",
             trace.total_tool_calls,
             str(total_tokens),
@@ -499,6 +522,8 @@ def _print_details(results: list):
             logger.info("  message            : %s", r)
             continue
 
+        metrics = _summary_metrics(r.run_logs or [])
+        g = metrics["guard_stats"]
         trace = extract_agent_trace(r)
         retrieval = {}
         if r.run_logs:
@@ -508,16 +533,20 @@ def _print_details(results: list):
         logger.info("  executed           : %s", r.executed)
         logger.info("  task_completed     : %s", r.task_completed)
         logger.info("  iterations         : %s", r.iterations)
-        logger.info("  sql_repairs_used   : %s", r.sql_repairs_used)
-        logger.info("  restarts_used      : %s", r.restarts_used)
         logger.info("  latency_s          : %.3f", r.latency_s)
+        logger.info("  sql_repairs        : %s  %s", g["sql_repairs"]["total"], g["sql_repairs"]["by_step"] or "")
+        logger.info("  step_retries       : %s  %s", g["step_retries"]["total"], g["step_retries"]["by_step"] or "")
+        logger.info("  replans            : %s", g["replans"])
+        logger.info("  blocked_calls      : %s", g["blocked_calls"])
+        for evt in g.get("replan_events", []):
+            logger.info(
+                "  replan_trigger     : %s  step=%s  detail=%s",
+                evt.get("trigger"),
+                evt.get("step"),
+                _short(evt.get("detail") or "", 80),
+            )
         if retrieval:
-            logger.info("  retrieval_score    : %s", retrieval.get("top_score"))
-            # logger.info("  retrieval_scoped   : %s", retrieval.get("scope_active"))
-            # logger.info(
-            #     "  retrieval_candidates: %s",
-            #     [c.get("full_name") for c in retrieval.get("candidates", [])],
-            # )
+            logger.info("  retrieval_score    : %s  scoped=%s", retrieval.get("top_score"), retrieval.get("scope_active"))
 
         step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(r.run_logs)
         failed_summary = _failed_step_summary(r.run_logs)
@@ -715,10 +744,17 @@ def _print_details(results: list):
         logger.info(f"\n{BRIGHT_RED}  FINAL:{RESET}")
         logger.info("    answer            : %s", r.final_answer or "(none)")
         logger.info("    sql               : %s", r.final_sql or "(none)")
-        logger.info(
-            "    result_data       : %s",
-            r.result_data if r.result_data is not None else "(none)",
-        )
+        if r.result_data is not None:
+            rc = _extract_result_contract_info(r.result_data)
+            ms = rc.get("model_summary_result") or {}
+            logger.info(
+                "    result            : rows=%s  columns=%s  truncated=%s",
+                rc.get("full_result_row_count"),
+                ms.get("columns"),
+                ms.get("result_truncated_for_model"),
+            )
+        else:
+            logger.info("    result            : (none)")
 
     logger.info("\n" + "=" * 110)
 
@@ -739,16 +775,16 @@ async def store_run(run: EvalRun, results: list) -> str:
             logger.warning("upload failed [%s]: %s", path, e)
 
     try:
-        _update_queries_index(q_hash, run.query)
+        _update_queries_index(q_hash, run.query, run.query_id)
         if not query_meta_exists(q_hash):
             await _upload(
-                f"{STORAGE_VERSION}/{q_hash}/meta.json",
-                {"query": run.query, "query_hash": q_hash},
+                f"{STORAGE_VERSION}/{q_hash}/query.json",
+                {"query_id": run.query_id, "query": run.query, "query_hash": q_hash},
             )
     except Exception as e:
         logger.warning("Failed to update query index: %s", e)
 
-    await _upload(f"{base}/system_prompt.txt", load_prompt(run.prompt_name))
+    await _upload(f"{base}/prompt.txt", load_prompt(run.prompt_name))
 
     summary = []
     normalized_docs = []
@@ -791,6 +827,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                 final_answer=_fallback_answer_from_logs(snap.get("run_logs", [])),
                 required_step_ids=set(plan["required_step_ids"]),
                 plan_finalized=plan["plan_finalized"],
+                planned_steps=plan["planned_steps"],
             )
             active_errors = _dedup(
                 _combine_active_errors(active_step_issues, snap.get("all_errors", []))
@@ -814,20 +851,21 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "task_completed": task_completed,
                 "model_task_completed": snap.get("task_completed", False),
                 "iterations": snap.get("iterations", 0),
-                "sql_repairs_used": snap.get("sql_repairs_used", 0),
-                "restarts_used": snap.get("restart_count", 0),
                 "total_tool_calls": trace.total_tool_calls,
                 "latency_s": None,
                 "tokens": tokens,
-                "retrieval_scope_active": retrieval["scope_active"],
-                "retrieval_top_score": retrieval["top_score"],
-                "retrieval_candidates": retrieval["candidates"],
+                "retrieval": retrieval,
                 "plan_finalized": plan["plan_finalized"],
                 "planned_steps": plan["planned_steps"],
                 "required_step_ids": plan["required_step_ids"],
-                "model_summary_result": result_contract["model_summary_result"],
-                "full_result_available": result_contract["full_result_available"],
-                "full_result_row_count": result_contract["full_result_row_count"],
+                "result": result_contract,
+                "guard_stats": metrics["guard_stats"],
+                "process": {
+                    "total_step_errors": metrics["total_step_errors"],
+                    "discovery_calls": metrics["discovery_calls"],
+                    "redundant_steps": metrics["redundant_steps"],
+                    "db_count_used": metrics["db_count_used"],
+                },
                 "errors": active_errors,
                 "trace": asdict(trace),
                 "run_logs": snap.get("run_logs", []),
@@ -851,22 +889,18 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "executed": executed,
                     "task_completed": task_completed,
                     "iterations": doc["iterations"],
-                    "sql_repairs_used": doc["sql_repairs_used"],
-                    "restarts_used": doc["restarts_used"],
                     "total_tool_calls": trace.total_tool_calls,
                     "latency_s": None,
                     "total_tokens": tokens.get("total_tokens"),
                     "retrieval_scope_active": retrieval["scope_active"],
                     "retrieval_top_score": retrieval["top_score"],
-                    "full_result_available": result_contract["full_result_available"],
                     "full_result_row_count": result_contract["full_result_row_count"],
+                    "sql_repairs": metrics["guard_stats"]["sql_repairs"]["total"],
+                    "step_retries": metrics["guard_stats"]["step_retries"]["total"],
+                    "replans": metrics["guard_stats"]["replans"],
+                    "blocked_calls": metrics["guard_stats"]["blocked_calls"],
                     "total_step_errors": metrics["total_step_errors"],
-                    "blocked_calls": metrics["blocked_calls"],
-                    "discovery_calls": metrics["discovery_calls"],
                     "redundant_steps": metrics["redundant_steps"],
-                    "db_count_used": metrics["db_count_used"],
-                    "repaired_steps": metrics["repaired_steps"],
-                    "repaired_step_counts": metrics["repaired_step_counts"],
                     "error": _short("; ".join(active_errors) or str(r), 300),
                 }
             )
@@ -894,6 +928,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                 final_answer=(r.final_answer or _fallback_answer_from_logs(r.run_logs or [])),
                 required_step_ids=set(plan["required_step_ids"]),
                 plan_finalized=plan["plan_finalized"],
+                planned_steps=plan["planned_steps"],
             )
             status = "completed" if task_completed else "incomplete"
             terminal_context = _build_terminal_context(r.run_logs or [], active_errors)
@@ -909,19 +944,21 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "task_completed": task_completed,
                 "model_task_completed": r.task_completed,
                 "iterations": r.iterations,
-                "sql_repairs_used": r.sql_repairs_used,
-                "restarts_used": r.restarts_used,
+                "total_tool_calls": trace.total_tool_calls,
                 "latency_s": r.latency_s,
                 "tokens": tokens,
-                "retrieval_scope_active": retrieval["scope_active"],
-                "retrieval_top_score": retrieval["top_score"],
-                "retrieval_candidates": retrieval["candidates"],
+                "retrieval": retrieval,
                 "plan_finalized": plan["plan_finalized"],
                 "planned_steps": plan["planned_steps"],
                 "required_step_ids": plan["required_step_ids"],
-                "model_summary_result": result_contract["model_summary_result"],
-                "full_result_available": result_contract["full_result_available"],
-                "full_result_row_count": result_contract["full_result_row_count"],
+                "result": result_contract,
+                "guard_stats": metrics["guard_stats"],
+                "process": {
+                    "total_step_errors": metrics["total_step_errors"],
+                    "discovery_calls": metrics["discovery_calls"],
+                    "redundant_steps": metrics["redundant_steps"],
+                    "db_count_used": metrics["db_count_used"],
+                },
                 "errors": active_errors,
                 "trace": asdict(trace),
                 "failed_step_summary": failed_summary,
@@ -932,9 +969,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "final": {
                     "answer": r.final_answer,
                     "sql": r.final_sql,
-                    "result_data": r.result_data,
+                    "result_data": result_contract,
                 },
-                "total_tool_calls": trace.total_tool_calls,
                 "run_logs": r.run_logs or [],
             }
 
@@ -946,22 +982,18 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "executed": executed,
                     "task_completed": task_completed,
                     "iterations": r.iterations,
-                    "sql_repairs_used": r.sql_repairs_used,
-                    "restarts_used": r.restarts_used,
                     "total_tool_calls": trace.total_tool_calls,
                     "latency_s": r.latency_s,
                     "total_tokens": tokens.get("total_tokens"),
                     "retrieval_scope_active": retrieval["scope_active"],
                     "retrieval_top_score": retrieval["top_score"],
-                    "full_result_available": result_contract["full_result_available"],
                     "full_result_row_count": result_contract["full_result_row_count"],
+                    "sql_repairs": metrics["guard_stats"]["sql_repairs"]["total"],
+                    "step_retries": metrics["guard_stats"]["step_retries"]["total"],
+                    "replans": metrics["guard_stats"]["replans"],
+                    "blocked_calls": metrics["guard_stats"]["blocked_calls"],
                     "total_step_errors": metrics["total_step_errors"],
-                    "blocked_calls": metrics["blocked_calls"],
-                    "discovery_calls": metrics["discovery_calls"],
                     "redundant_steps": metrics["redundant_steps"],
-                    "db_count_used": metrics["db_count_used"],
-                    "repaired_steps": metrics["repaired_steps"],
-                    "repaired_step_counts": metrics["repaired_step_counts"],
                     "error": "; ".join(active_errors) or "-",
                 }
             )
@@ -969,9 +1001,10 @@ async def store_run(run: EvalRun, results: list) -> str:
         normalized_docs.append(doc)
 
     await _upload(
-        f"{base}/meta.json",
+        f"{base}/run_summary.json",
         {
             "run_id": run_id,
+            "query_id": run.query_id,
             "query": run.query,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "prompt_name": run.prompt_name,
@@ -993,7 +1026,12 @@ async def store_run(run: EvalRun, results: list) -> str:
         while key in seen_ids:
             key = f"{model_id}_{uuid.uuid4().hex[:6]}"
         seen_ids.add(key)
-        await _upload(f"{base}/{key}.json", doc)
+
+        run_logs = doc.pop("run_logs", [])
+        result_doc = doc
+
+        await _upload(f"{base}/{key}/result.json", result_doc)
+        await _upload(f"{base}/{key}/logs.json", run_logs)
 
     logger.info("SAVED: %s/", base)
     return f"{q_hash}/{run_id}"

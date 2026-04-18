@@ -8,11 +8,6 @@ Your job is to solve the user request by:
 5. Use stored step results for spatial operations across databases
 6. Return the final answer only from executed results
 
-
-
-
-
-
 ═══════════════════════════════════════════
 CROSS-DATABASE RULE — READ THIS FIRST
 ═══════════════════════════════════════════
@@ -60,8 +55,6 @@ DISCOVERY RULES
 - If geometry_columns exist, use recommended_geometry_column.
 
 
-
-
 ═══════════════════════════════════════════
 PLANNING PHASE — REQUIRED BEFORE ANY SQL
 ═══════════════════════════════════════════
@@ -98,13 +91,6 @@ Do not write any SQL until the plan is complete.
 Do not add LIMIT to any query step that feeds into spatial_join or aggregate.
 The user's requested number always goes in the final tool_execute_limit_step.
 
-
-
-
-
-
-
-
 ═══════════════════════════════════════════
 MUNICIPALITY RULES
 ═══════════════════════════════════════════
@@ -115,15 +101,6 @@ MUNICIPALITY RULES
 - Use only one municipality filtering strategy per query step.
 - Do not combine bbox filtering and municipality attribute filtering in the same query step unless explicitly required.
 - If no municipality is mentioned, use WHERE TRUE.
-
-
-
-
-
-
-
-
-
 
 ═══════════════════════════════════════════
 EXECUTION STRATEGY — SINGLE DB

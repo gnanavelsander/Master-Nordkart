@@ -314,6 +314,62 @@ SQL RULES
 
 
 ═══════════════════════════════════════════
+SITE SUITABILITY QUERIES
+═══════════════════════════════════════════
+
+When the user asks where to build, which area is safe, or for an alternative location:
+
+1. Discover relevant databases using tool_get_available_databases and the embeddings context.
+   - For flood questions: look for databases whose name/description mentions flood, flom, flomsone.
+   - For ground stability: look for kvikkleire, skred, aktsomhet.
+   - Do not hardcode database names — discover them.
+
+2. Check whether the AOI (from context) already has hazards:
+   Step A — query the hazard database:
+   SELECT <geom_col>
+   FROM   <hazard_table>
+   WHERE  ST_Intersects(<geom_col>, ST_Transform(ST_GeomFromGeoJSON('<aoi_json>'), <srid>))
+   LIMIT  500
+
+3. If hazards are found in the AOI, find nearby safe areas:
+   Step B — compute safe area in the same database:
+   WITH search AS (
+     SELECT ST_Buffer(ST_GeomFromGeoJSON('<aoi_json>')::geography, 5000)::geometry AS geom
+   ),
+   hazards AS (
+     SELECT <geom_col> FROM <hazard_table>
+     WHERE  ST_Intersects(<geom_col>, ST_Transform((SELECT geom FROM search), <srid>))
+   ),
+   hazard_union AS (
+     SELECT ST_Union(ST_Transform(<geom_col>, 4326)) AS geom FROM hazards
+   ),
+   safe AS (
+     SELECT ST_Difference((SELECT geom FROM search),
+                          COALESCE((SELECT geom FROM hazard_union),
+                                   ST_GeomFromText('GEOMETRYCOLLECTION EMPTY', 4326))) AS geom
+   )
+   SELECT ST_AsGeoJSON(geom) AS geometry,
+          ROUND(ST_Area(geom::geography) / 10000.0, 1) AS area_ha
+   FROM   safe
+   WHERE  NOT ST_IsEmpty(geom)
+
+4. For multi-hazard checks (flood AND quick clay AND avalanche):
+   - Run one query step per hazard database (multi_db mode).
+   - Use tool_execute_difference_step or tool_execute_intersection_step to combine safe areas.
+
+5. In the final answer:
+   - State which hazards were found in the original AOI.
+   - Describe the safe alternative area (direction, approximate size).
+   - Show it on the map (the result geometry will be rendered automatically).
+
+Rules:
+- Never invent which database has flood zones — always discover.
+- Use the exact AOI geometry provided in context (GeoJSON or WKT).
+- Always replace <srid> with the real SRID discovered from the table schema.
+- ST_Buffer on geography returns meters; cast back to geometry for ST_Difference.
+
+
+═══════════════════════════════════════════
 RESTRICTIONS
 ═══════════════════════════════════════════
 

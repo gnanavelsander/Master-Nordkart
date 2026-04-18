@@ -35,12 +35,11 @@ class ModelParams:
     tool_choice: str = "auto"
     max_iterations: int = 12
     max_sql_repairs: int = 3
-    max_restarts: int = 1
+    max_step_retries: int = 3
+    max_replans: int = 1
     top_p: float | None = None
     reasoning_effort: str | None = None
 
-    max_step_retries: int = 3
-    max_replans: int = 1
 
 
 @dataclass
@@ -92,6 +91,7 @@ class EvalRun:
     model_ids: list[str]
     params: ModelParams | None = None
     prompt_name: str = "default"
+    query_id: str | None = None
 
     def __post_init__(self):
         if self.params is None:
@@ -123,10 +123,7 @@ class AgentState(TypedDict, total=False):
  
     sql_repair_count: int
     max_sql_repairs: int
- 
-    restart_count: int
-    max_restarts: int
- 
+
     current_run_log: list
     all_run_logs: list
  
@@ -179,8 +176,7 @@ class AgentState(TypedDict, total=False):
     iter_had_validation_error: bool
     iter_any_exec_ok: bool
  
-    plan_locked: bool
-    locked_step_ids: set            
+    locked_step_ids: set
  
     crash_snapshot: dict
     attempt_number: int
