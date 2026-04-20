@@ -181,7 +181,7 @@ def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
         str(step_id) for step_id in set(state.get("required_step_ids", set()))
     }
 
-    if state.get("needs_replan", False):
+    if state.get("replan_trigger") is not None:
         return _block_step_result(
             "tool_validate_sql",
             "Replan is required before further validation. Produce a new numbered plan first.",
@@ -191,9 +191,11 @@ def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
 
     max_repairs = getattr(state.get("params"), "max_sql_repairs", 3)
     if not _sql_repair_ok(state, step_number, max_repairs):
-        state["needs_replan"] = True
-        state["replan_reason"] = "blocked_step"
-        state["replan_error"] = f"Step {step_number} exhausted SQL repair budget ({max_repairs} attempts)."
+        state["replan_trigger"] = {
+            "reason": "blocked_step",
+            "error": f"Step {step_number} exhausted SQL repair budget ({max_repairs} attempts).",
+            "zero_rows_step": None,
+        }
         return _block_step_result(
             "tool_validate_sql",
             f"Step {step_number} has exhausted its SQL repair budget ({max_repairs} attempts). Produce a new plan.",
@@ -205,7 +207,11 @@ def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
         count = state.get("plan_block_count", 0) + 1
         state["plan_block_count"] = count
         if count >= 3:
-            state["needs_replan"] = True
+            state["replan_trigger"] = {
+                "reason": "blocked_step",
+                "error": "Plan not finalized after 3 validation blocks.",
+                "zero_rows_step": None,
+            }
             state["plan_block_count"] = 0
         return _block_step_result(
             "tool_validate_sql",
@@ -222,6 +228,15 @@ def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
             f"Step {step_number} is not part of the finalized plan. Validate only planned step numbers.",
             step_number,
             "query",
+        )
+
+    planned_action = (planned_steps.get(str(step_number)) or planned_steps.get(step_number) or {}).get("action")
+    if planned_action and planned_action != "query":
+        return _block_step_result(
+            "tool_validate_sql",
+            f"Step {step_number} is planned as '{planned_action}', not a SQL query. Do not validate SQL for this step.",
+            step_number,
+            planned_action,
         )
 
     step_registry = dict(state.get("step_registry", {}))
@@ -277,12 +292,12 @@ def _guard_step_tool(
         )
 
     if not isinstance(step_obj, dict):
+        counts = dict(state.get("tool_shape_error_counts", {}))
+        counts[name] = counts.get(name, 0) + 1
+        state["tool_shape_error_counts"] = counts
         return _block_step_result(name, _flat_hint(), None, action_name), None
 
     step_obj = dict(step_obj)
-    if step_obj.get("step") is None and isinstance(raw_args.get("step_number"), int):
-        step_obj["step"] = raw_args.get("step_number")
-
     step_number = step_obj.get("step")
     action = step_obj.get("action") or action_name
     step_obj["action"] = action
@@ -306,7 +321,7 @@ def _guard_step_tool(
             sorted(str(k) for k in dict(state.get("planned_steps", {})).keys()),
         )
 
-    if state.get("needs_replan", False):
+    if state.get("replan_trigger") is not None:
         blocked_reason = (
             "Replan is required before further execution. Produce a new numbered plan first."
         )
@@ -314,7 +329,11 @@ def _guard_step_tool(
         count = state.get("plan_block_count", 0) + 1
         state["plan_block_count"] = count
         if count >= 3:
-            state["needs_replan"] = True
+            state["replan_trigger"] = {
+                "reason": "blocked_step",
+                "error": "Plan not finalized after 3 execution blocks.",
+                "zero_rows_step": None,
+            }
             state["plan_block_count"] = 0
         blocked_reason = (
             "Planning is required before execution. First produce an explicit numbered plan for the task."
@@ -325,15 +344,17 @@ def _guard_step_tool(
         unplanned_counts[key] = unplanned_counts.get(key, 0) + 1
         state["unplanned_step_block_counts"] = unplanned_counts
         max_unplanned = getattr(state.get("params"), "max_step_retries", 3)
-        if unplanned_counts[key] >= max_unplanned and not state.get("needs_replan"):
-            state["needs_replan"] = True
-            state["replan_reason"] = "unplanned_step"
-            state["replan_trigger_action"] = action_name
-            state["replan_trigger_blocked_count"] = unplanned_counts[key]
-            state["replan_error"] = (
-                f"Step {step_number} was attempted {unplanned_counts[key]} times "
-                "but is not in the finalized plan."
-            )
+        if unplanned_counts[key] >= max_unplanned and state.get("replan_trigger") is None:
+            state["replan_trigger"] = {
+                "reason": "unplanned_step",
+                "error": (
+                    f"Step {step_number} was attempted {unplanned_counts[key]} times "
+                    "but is not in the finalized plan."
+                ),
+                "zero_rows_step": None,
+                "action": action_name,
+                "blocked_count": unplanned_counts[key],
+            }
             blocked_reason = (
                 f"Step {step_number} is not in the finalized plan and has been blocked "
                 f"{unplanned_counts[key]} times. You must produce a new plan that includes "
@@ -345,6 +366,9 @@ def _guard_step_tool(
                 "Execute only planned step numbers."
             )
     elif step_number in set(state.get("locked_step_ids", set())):
+        counts = dict(state.get("locked_step_block_counts", {}))
+        counts[str(step_number)] = counts.get(str(step_number), 0) + 1
+        state["locked_step_block_counts"] = counts
         blocked_reason = (
             f"Step {step_number} is locked after a successful validation/execution and cannot be changed."
         )
@@ -390,9 +414,11 @@ def _guard_step_tool(
     elif blocked_reason is None:
         max_retries = getattr(state.get("params"), "max_step_retries", 3)
         if step_number is not None and not _step_retry_ok(state, step_number, max_retries):
-            state["needs_replan"] = True
-            state["replan_reason"] = "blocked_step"
-            state["replan_error"] = f"Step {step_number} exhausted {action} retry budget ({max_retries} attempts)."
+            state["replan_trigger"] = {
+                "reason": "blocked_step",
+                "error": f"Step {step_number} exhausted {action} retry budget ({max_retries} attempts).",
+                "zero_rows_step": None,
+            }
             blocked_reason = (
                 f"Step {step_number} has exhausted its {action} retry budget ({max_retries} attempts). "
                 "Produce a new plan."
@@ -401,6 +427,9 @@ def _guard_step_tool(
             blocked_reason = "step.step is required."
         elif action == "aggregate":
             if step_obj.get("source_step") is None:
+                counts = dict(state.get("missing_source_step_counts", {}))
+                counts[action] = counts.get(action, 0) + 1
+                state["missing_source_step_counts"] = counts
                 blocked_reason = "aggregate requires source_step."
             elif not step_obj.get("group_by") and not step_obj.get("aggregation_type"):
                 agg_list = step_obj.get("aggregate") or step_obj.get("aggregates")
@@ -421,11 +450,17 @@ def _guard_step_tool(
                         "\"group_by\": [\"kommunenavn\"], \"aggregation_type\": \"count\", \"metric_as\": \"building_count\"}"
                     )
         elif action in SOURCE_STEP_ACTIONS and step_obj.get("source_step") is None:
+            counts = dict(state.get("missing_source_step_counts", {}))
+            counts[action] = counts.get(action, 0) + 1
+            state["missing_source_step_counts"] = counts
             blocked_reason = f"{action} requires source_step."
         elif action in DUAL_SOURCE_ACTIONS:
             left = step_obj.get("left_source")
             right = step_obj.get("right_source")
             if left is None or right is None:
+                counts = dict(state.get("missing_source_step_counts", {}))
+                counts[action] = counts.get(action, 0) + 1
+                state["missing_source_step_counts"] = counts
                 blocked_reason = f"{action} requires left_source and right_source as plain integers (step numbers)."
             elif not isinstance(left, int) or not isinstance(right, int):
                 blocked_reason = (
@@ -652,11 +687,13 @@ def _update_iteration_flags(
         if (
             is_execute_timeout
             and state.get("plan_finalized")
-            and not state.get("needs_replan")
+            and state.get("replan_trigger") is None
         ):
-            state["needs_replan"] = True
-            state["replan_reason"] = "timeout_step"
-            state["replan_error"] = str(parsed_result.get("error") or "")
+            state["replan_trigger"] = {
+                "reason": "timeout_step",
+                "error": str(parsed_result.get("error") or ""),
+                "zero_rows_step": None,
+            }
             logger.info("      [replan] Step %s timed out — flagging for replan", step_number)
 
     if exec_ok:
@@ -718,11 +755,13 @@ def _handle_validate_sql_tool(
             state.get("plan_finalized")
             and step_number is not None
             and str(step_number) not in {str(k) for k in state.get("planned_steps", {}).keys()}
-            and not state.get("needs_replan")
+            and state.get("replan_trigger") is None
         ):
-            state["needs_replan"] = True
-            state["replan_reason"] = "blocked_step"
-            state["replan_error"] = str(parsed_result.get("reason") or parsed_result.get("error") or "")
+            state["replan_trigger"] = {
+                "reason": "blocked_step",
+                "error": str(parsed_result.get("reason") or parsed_result.get("error") or ""),
+                "zero_rows_step": None,
+            }
         return
 
     if step_number is not None and not is_locked:
@@ -810,43 +849,6 @@ def _handle_discovery_tool(
             state["discovered_tables"] = _dedup(list(state.get("discovered_tables", [])) + [table])
 
 
-def _run_retrieval_scoped_discovery_tool(
-    state: "AgentState",
-    name: str,
-    args: dict,
-) -> str | None:
-    """
-    Retrieval scope should only influence which DATABASES are suggested first.
-    Schema/table/catalog discovery inside a database must use the real MCP tools
-    unchanged so embeddings do not shrink or rewrite those results.
-
-    Returns a pre-built JSON string to short-circuit the tool call, or
-    None to let the caller invoke the real tool.
-    """
-    if not state.get("retrieval_scope_active", False):
-        return None
-
-    retrieval_candidates = state.get("retrieval_candidates") or []
-    if not retrieval_candidates:
-        return None
-
-    ordered_databases: list[dict] = []
-    seen: set[str] = set()
-    for item in retrieval_candidates:
-        database = str(item.get("database") or "").strip()
-        if not database or database in seen:
-            continue
-        seen.add(database)
-        ordered_databases.append({
-            "database": database,
-            "description": str(item.get("database_description") or ""),
-        })
-
-    # Only database listing is scoped by retrieval, preserving score order.
-    if name == "tool_get_available_databases":
-        return json.dumps(ordered_databases, ensure_ascii=False)
-
-    return None
 
 
 
@@ -1063,7 +1065,7 @@ async def _tools_node(state: AgentState) -> AgentState:
                 if (
                     exec_ok
                     and rows_returned == 0
-                    and not state.get("needs_replan")
+                    and state.get("replan_trigger") is None
                     and state.get("plan_finalized")
                 ):
                     required = {str(s) for s in state.get("required_step_ids", set())}
@@ -1084,17 +1086,19 @@ async def _tools_node(state: AgentState) -> AgentState:
                             "spatial_join", "aggregate", "sort", "limit",
                             "clip", "intersection", "difference", "attribute_join",
                         }
+                        normalized_planned = {str(k): v for k, v in planned_steps.items()}
                         has_dependent_remaining = any(
-                            str(planned_steps.get(int(sid) if str(sid).isdigit() else sid, {}).get("action", "query")).lower()
+                            str(normalized_planned.get(str(sid), {}).get("action", "query")).lower()
                             in dependent_actions
                             for sid in remaining
                         )
                         if has_dependent_remaining:
                             step_number = step_obj.get("step") if isinstance(step_obj, dict) else None
-                            state["needs_replan"] = True
-                            state["zero_rows_step"] = step_number
-                            state["replan_reason"] = "zero_rows_step"
-                            state["replan_error"] = "planned step executed successfully but returned 0 rows"
+                            state["replan_trigger"] = {
+                                "reason": "zero_rows_step",
+                                "error": "planned step executed successfully but returned 0 rows",
+                                "zero_rows_step": step_number,
+                            }
                             logger.info(
                                 "      [replan] Step %s returned 0 rows — %s dependent steps remain, flagging for replan",
                                 step_number, len(remaining),
@@ -1128,14 +1132,7 @@ async def _tools_node(state: AgentState) -> AgentState:
                     )
 
             else:
-                # Scoped result takes priority: if retrieval candidates can serve
-                # this discovery request, use them — even after plan is finalized.
-                # Only freeze if candidates cannot answer the request.
-                scoped_result = _run_retrieval_scoped_discovery_tool(state, name, args)
-                if scoped_result is not None:
-                    result_str = scoped_result
-                else:
-                    result_str = await tool.ainvoke(args)
+                result_str = await tool.ainvoke(args)
                 _handle_discovery_tool(state, name, args, result_str)
 
             _build_tool_message_and_log(

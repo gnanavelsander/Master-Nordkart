@@ -17,6 +17,8 @@ from agent_helpers import (
     _dedup,
     _empty_token_dict,
     _executed_from_steps,
+    _step_execution_map,
+    _format_step_execution,
     _parse_tool_result,
     _short,
     _task_completed_from_steps,
@@ -101,6 +103,17 @@ def _sorted_step_items(step_registry: dict) -> list[tuple]:
         key=lambda x: int(x[0]) if str(x[0]).isdigit() else str(x[0]),
     )
 
+import json
+def _is_pre_plan_guard_error(error) -> bool:
+    """True if this error is a pre-plan guard block, not a real step-level failure."""
+    try:
+        parsed = json.loads(error) if isinstance(error, str) else (error or {})
+        reason = str(parsed.get("reason", ""))
+    except Exception:
+        reason = str(error or "")
+    return "Planning is required" in reason
+
+
 def _failed_step_summary(run_logs: list | None) -> dict | None:
     active, _ = _step_issue_summaries(run_logs)
     return active[-1] if active else None
@@ -115,6 +128,8 @@ def _step_issue_summaries(run_logs: list | None) -> tuple[list[dict], list[dict]
             failed_step = entry.get("failed_step")
             iteration_error = entry.get("iteration_error")
             if failed_step is None or not iteration_error:
+                continue
+            if _is_pre_plan_guard_error(iteration_error):
                 continue
 
             meta = dict(step_registry.get(failed_step, {}))
@@ -141,6 +156,36 @@ def _step_issue_summaries(run_logs: list | None) -> tuple[list[dict], list[dict]
             active.append(latest)
 
     return active, recovered
+
+
+def _format_error_summary(run_logs: list | None) -> str:
+    """Return compact error summary: '3 errors (step 1: 1, step 3: 2)' or '-'."""
+    step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(run_logs)
+    errors_by_step: dict[str, int] = {}
+
+    for run in (run_logs or []):
+        for entry in (run.get("iterations", []) or []):
+            failed_step = entry.get("failed_step")
+            if failed_step is not None and entry.get("iteration_error"):
+                key = str(failed_step)
+                errors_by_step[key] = errors_by_step.get(key, 0) + 1
+
+    # Also count steps that ended in a failed state (not executed)
+    for step_no, meta in step_registry.items():
+        key = str(step_no)
+        if not meta.get("executed") and meta.get("status") not in (None, "ok"):
+            if key not in errors_by_step:
+                errors_by_step[key] = 1
+
+    if not errors_by_step:
+        return "-"
+
+    total = sum(errors_by_step.values())
+    parts = [
+        f"step {k}: {v}"
+        for k, v in sorted(errors_by_step.items(), key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
+    ]
+    return f"{total} error{'s' if total != 1 else ''} ({', '.join(parts)})"
 
 
 def _combine_active_errors(step_issues: list[dict], all_errors: list[str] | None) -> list[str]:
@@ -240,6 +285,7 @@ def _summary_metrics(run_logs: list | None, trace: AgentTrace | None = None) -> 
 
     total_step_errors = 0
     blocked_calls = 0
+    pre_plan_guard_blocks = 0
     discovery_calls = 0
 
     discovery_tools = {
@@ -254,6 +300,9 @@ def _summary_metrics(run_logs: list | None, trace: AgentTrace | None = None) -> 
         for entry in run.get("iterations", []) or []:
             if entry.get("iteration_error"):
                 total_step_errors += 1
+
+                if _is_pre_plan_guard_error(entry.get("iteration_error")):
+                    pre_plan_guard_blocks += 1
 
             for t in entry.get("tools", []) or []:
                 tool_name = t.get("tool")
@@ -300,13 +349,28 @@ def _summary_metrics(run_logs: list | None, trace: AgentTrace | None = None) -> 
         trigger = run.get("replan_trigger")
         if trigger:
             replan_events.append({
-                "trigger": trigger,
+                "trigger": trigger.get("reason") if isinstance(trigger, dict) else trigger,
                 "step": run.get("replan_trigger_step"),
-                "action": run.get("replan_trigger_action"),
-                "blocked_count": run.get("replan_trigger_blocked_count"),
-                "detail": run.get("replan_trigger_detail"),
+                "action": trigger.get("action") if isinstance(trigger, dict) else None,
+                "blocked_count": trigger.get("blocked_count") if isinstance(trigger, dict) else None,
+                "detail": trigger.get("error") if isinstance(trigger, dict) else None,
                 "replan_index": run.get("replan_count", 0),
             })
+
+    # Aggregate guard block counters across all runs
+    tool_shape_errors: dict = {}
+    unplanned_blocks: dict = {}
+    locked_blocks: dict = {}
+    missing_source: dict = {}
+    for run in run_logs:
+        for k, v in (run.get("tool_shape_error_counts") or {}).items():
+            tool_shape_errors[k] = tool_shape_errors.get(k, 0) + v
+        for k, v in (run.get("unplanned_step_block_counts") or {}).items():
+            unplanned_blocks[k] = unplanned_blocks.get(k, 0) + v
+        for k, v in (run.get("locked_step_block_counts") or {}).items():
+            locked_blocks[k] = locked_blocks.get(k, 0) + v
+        for k, v in (run.get("missing_source_step_counts") or {}).items():
+            missing_source[k] = missing_source.get(k, 0) + v
 
     return {
         "guard_stats": {
@@ -320,7 +384,12 @@ def _summary_metrics(run_logs: list | None, trace: AgentTrace | None = None) -> 
             },
             "replans": replan_count,
             "blocked_calls": blocked_calls,
+            "pre_plan_guard_blocks": pre_plan_guard_blocks,
             "replan_events": replan_events,
+            "tool_shape_errors": tool_shape_errors,
+            "unplanned_step_blocks": unplanned_blocks,
+            "locked_step_blocks": locked_blocks,
+            "missing_source_step": missing_source,
         },
         "total_step_errors": total_step_errors,
         "discovery_calls": discovery_calls,
@@ -460,10 +529,10 @@ def _print_summary(query: str, results: list):
     logger.info("#" * 130)
 
     logger.info(
-        "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-8s %-10s %-8s %-10s %s",
+        "%-20s %-8s %-20s %-8s %-6s %-6s %-6s %-8s %-10s %-8s %-10s %s",
         "MODEL",
         "SQL_OK",
-        "EXEC",
+        "STEPS_EXEC",
         "TASK_OK",
         "ITER",
         "REP",
@@ -474,13 +543,13 @@ def _print_summary(query: str, results: list):
         "TOKENS",
         "ERROR",
     )
-    logger.info("-" * 130)
+    logger.info("-" * 140)
 
     for r in results:
         if isinstance(r, Exception):
             logger.info(
-                "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-8s %-10s %-8s %-10s %s",
-                "ERROR", "False", "False", "False",
+                "%-20s %-8s %-20s %-8s %-6s %-6s %-6s %-8s %-10s %-8s %-10s %s",
+                "ERROR", "F", "-", "F",
                 "-", "-", "-", "-", "-", "-", "-",
                 _short(str(r), 300),
             )
@@ -489,15 +558,16 @@ def _print_summary(query: str, results: list):
         metrics = _summary_metrics(r.run_logs or [])
         g = metrics["guard_stats"]
         trace = extract_agent_trace(r)
-        err = "; ".join(_active_errors_for_result(r)) or "-"
+        err = _format_error_summary(r.run_logs or [])
         total_tokens = r.tokens.total_tokens if r.tokens else "-"
+        steps_exec = _format_step_execution(_step_execution_map(r.run_logs or []))
 
         logger.info(
-            "%-20s %-8s %-8s %-8s %-6s %-6s %-6s %-8s %-10s %-8s %-10s %s",
+            "%-20s %-8s %-20s %-8s %-6s %-6s %-6s %-8s %-10s %-8s %-10s %s",
             r.model_id,
-            str(r.valid_sql),
-            str(r.executed),
-            str(r.task_completed),
+            "T" if r.valid_sql else "F",
+            steps_exec,
+            "T" if r.task_completed else "F",
             r.iterations,
             g["sql_repairs"]["total"],
             g["step_retries"]["total"],
@@ -538,6 +608,16 @@ def _print_details(results: list):
         logger.info("  step_retries       : %s  %s", g["step_retries"]["total"], g["step_retries"]["by_step"] or "")
         logger.info("  replans            : %s", g["replans"])
         logger.info("  blocked_calls      : %s", g["blocked_calls"])
+        if g.get("pre_plan_guard_blocks"):
+            logger.info("  pre_plan_blocks    : %s", g["pre_plan_guard_blocks"])
+        if g.get("tool_shape_errors"):
+            logger.info("  shape_errors       : %s", g["tool_shape_errors"])
+        if g.get("unplanned_step_blocks"):
+            logger.info("  unplanned_blocks   : %s", g["unplanned_step_blocks"])
+        if g.get("locked_step_blocks"):
+            logger.info("  locked_blocks      : %s", g["locked_step_blocks"])
+        if g.get("missing_source_step"):
+            logger.info("  missing_source     : %s", g["missing_source_step"])
         for evt in g.get("replan_events", []):
             logger.info(
                 "  replan_trigger     : %s  step=%s  detail=%s",
@@ -743,6 +823,8 @@ def _print_details(results: list):
 
         logger.info(f"\n{BRIGHT_RED}  FINAL:{RESET}")
         logger.info("    answer            : %s", r.final_answer or "(none)")
+        if not r.final_answer:
+            logger.info("    answer_missing    : True")
         logger.info("    sql               : %s", r.final_sql or "(none)")
         if r.result_data is not None:
             rc = _extract_result_contract_info(r.result_data)
@@ -887,6 +969,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "status": "error",
                     "valid_sql": valid_sql,
                     "executed": executed,
+                    "steps_executed": _step_execution_map(snap.get("run_logs", [])),
                     "task_completed": task_completed,
                     "iterations": doc["iterations"],
                     "total_tool_calls": trace.total_tool_calls,
@@ -901,7 +984,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "blocked_calls": metrics["guard_stats"]["blocked_calls"],
                     "total_step_errors": metrics["total_step_errors"],
                     "redundant_steps": metrics["redundant_steps"],
-                    "error": _short("; ".join(active_errors) or str(r), 300),
+                    "error": _format_error_summary(snap.get("run_logs", [])),
                 }
             )
         else:
@@ -968,6 +1051,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "terminal_context": terminal_context,
                 "final": {
                     "answer": r.final_answer,
+                    "answer_missing": not bool(r.final_answer),
                     "sql": r.final_sql,
                     "result_data": result_contract,
                 },
@@ -980,6 +1064,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "status": status,
                     "valid_sql": valid_sql,
                     "executed": executed,
+                    "steps_executed": _step_execution_map(r.run_logs or []),
                     "task_completed": task_completed,
                     "iterations": r.iterations,
                     "total_tool_calls": trace.total_tool_calls,
@@ -994,7 +1079,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "blocked_calls": metrics["guard_stats"]["blocked_calls"],
                     "total_step_errors": metrics["total_step_errors"],
                     "redundant_steps": metrics["redundant_steps"],
-                    "error": "; ".join(active_errors) or "-",
+                    "error": _format_error_summary(r.run_logs or []),
                 }
             )
 

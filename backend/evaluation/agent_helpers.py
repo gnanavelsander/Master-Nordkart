@@ -120,32 +120,32 @@ def _extract_databases_from_result(parsed: Any) -> list[str]:
     return []
 
 
-def _format_restart_summary(state: "AgentState") -> str:
-    return f"""
-Original query:
-{state["user_input"]}
-
-Discovered databases:
-{state.get("discovered_databases", [])}
-
-Discovered tables:
-{state.get("discovered_tables", [])}
-
-Last failed SQL:
-{state.get("last_sql")}
-
-Last validation error:
-{state.get("last_validation_error")}
-
-Last guard error:
-{state.get("last_guard_error")}
-
-Last execution error:
-{state.get("last_execute_error")}
-
-Do not repeat the same failed SQL.
-Avoid redundant metadata calls if the needed metadata has already been discovered.
-""".strip()
+# def _format_restart_summary(state: "AgentState") -> str:
+#     return f"""
+# Original query:
+# {state["user_input"]}
+#
+# Discovered databases:
+# {state.get("discovered_databases", [])}
+#
+# Discovered tables:
+# {state.get("discovered_tables", [])}
+#
+# Last failed SQL:
+# {state.get("last_sql")}
+#
+# Last validation error:
+# {state.get("last_validation_error")}
+#
+# Last guard error:
+# {state.get("last_guard_error")}
+#
+# Last execution error:
+# {state.get("last_execute_error")}
+#
+# Do not repeat the same failed SQL.
+# Avoid redundant metadata calls if the needed metadata has already been discovered.
+# """.strip()
 
 
 def _sorted_step_entries(steps: dict | None) -> list[tuple]:
@@ -194,117 +194,26 @@ def _extract_plan_from_text(text: str | None) -> tuple[dict, set]:
                 pass
         return None
 
-    try:
-        parsed = _parse_plan_json(raw)
-        if parsed is not None and isinstance(parsed.get("planned_steps"), list):
-            planned_steps: dict = {}
-
-            for item in parsed["planned_steps"]:
-                if not isinstance(item, dict):
-                    continue
-
-                step_no = item.get("step")
-                action = item.get("action")
-
-                if not isinstance(step_no, int):
-                    continue
-                if not isinstance(action, str):
-                    continue
-
-                planned_steps[step_no] = {
-                    "step": step_no,
-                    "action": action,
-                    "description": item.get("purpose", ""),
-                    "database": item.get("database"),
-                }
-
-            required_step_ids = set(planned_steps.keys())
-            return planned_steps, required_step_ids
-    except Exception:
-        pass
-
-    lowered_raw = raw.lower()
-    plan_headers = (
-        "step list",
-        "plan:",
-        "execution plan",
-        "query mode:",
-        "my plan",
-        "here is my plan",
-        "steps:",
-        "approach:",
-        "following steps",
-        "task plan",
-        "query plan",
-    )
-    has_header = any(header in lowered_raw for header in plan_headers)
-    has_implicit_plan = len(re.findall(r"\bstep\s*\d+\b", lowered_raw)) >= 2
-    if not has_header and not has_implicit_plan:
+    parsed = _parse_plan_json(raw)
+    if parsed is None or not isinstance(parsed.get("planned_steps"), list):
         return {}, set()
 
-    _SECTION_HEADERS = (
-        "step list", "execution plan", "plan:",
-        "steps:", "my plan", "approach:", "following steps", "task plan", "query plan",
-    )
-
-    lines = [line.strip() for line in raw.splitlines() if line.strip()]
     planned_steps: dict = {}
-    in_step_section = False
-
-    def _extract_action_from_remainder(remainder: str) -> str | None:
-        cleaned = remainder.strip().lstrip(":.- ").strip()
-        for candidate in _PLAN_ACTIONS:
-            variants = (candidate, candidate.replace("_", " "))
-            if any(cleaned.startswith(variant) for variant in variants):
-                return candidate
-        return None
-
-    for line in lines:
-        lower = line.lower()
-        if any(header in lower for header in _SECTION_HEADERS):
-            in_step_section = True
+    for item in parsed["planned_steps"]:
+        if not isinstance(item, dict):
             continue
-        if in_step_section and (
-            "limit placement" in lower
-            or "data volume estimate" in lower
-            or "query mode" in lower
-        ):
+        step_no = item.get("step")
+        action = item.get("action")
+        if not isinstance(step_no, int) or not isinstance(action, str):
             continue
-        if not in_step_section and not lower.startswith("step "):
-            continue
-
-        step_match = re.search(r"\bstep\s*(\d+)\b", lower)
-        remainder = ""
-        if not step_match:
-            numbered_match = re.match(r"^(\d+)\.\s+", lower)
-            if numbered_match:
-                step_no = int(numbered_match.group(1))
-                remainder = lower[numbered_match.end():]
-            else:
-                continue
-        else:
-            step_no = int(step_match.group(1))
-            remainder = lower[step_match.end():]
-
-        action = _extract_action_from_remainder(remainder)
-        if action is None:
-            # Capture discover/call/route steps in planned_steps but not required_step_ids
-            planned_steps[step_no] = {
-                "step": step_no,
-                "action": "discover",
-                "description": line,
-                "is_discover": True,
-            }
-            continue
-
         planned_steps[step_no] = {
             "step": step_no,
             "action": action,
-            "description": line,
+            "description": item.get("purpose", ""),
+            "database": item.get("database"),
         }
 
-    # Only execution steps are required — discover steps are informational
-    required_step_ids = {k for k, v in planned_steps.items() if not v.get("is_discover", False)}
+    required_step_ids = set(planned_steps.keys())
     return planned_steps, required_step_ids
 
 
@@ -382,6 +291,20 @@ def _executed_from_steps(
     return any(step.get("executed", False) for step in outcomes)
 
 
+def _step_execution_map(run_logs: list | None) -> dict[str, bool]:
+    outcomes = _build_step_outcomes(run_logs)
+    return {str(s["step"]): bool(s.get("executed", False)) for s in outcomes}
+
+
+def _format_step_execution(step_map: dict[str, bool]) -> str:
+    if not step_map:
+        return "-"
+    parts = []
+    for step_no in sorted(step_map, key=lambda x: int(x) if x.isdigit() else x):
+        parts.append(f"{step_no}:{'T' if step_map[step_no] else 'F'}")
+    return " ".join(parts)
+
+
 def _answer_indicates_incomplete_task(answer: str | None) -> bool:
     text = (answer or "").strip().lower()
     if not text:
@@ -422,10 +345,15 @@ def _task_completed_from_steps(
     required_step_ids: set | list | None = None,
     plan_finalized: bool = False,
     planned_steps: dict | None = None,
+    original_required_step_ids: set | list | None = None,
 ) -> bool:
     required_ids = {
         _normalize_step_key(step_id)
         for step_id in (required_step_ids or [])
+    }
+    original_ids = {
+        _normalize_step_key(step_id)
+        for step_id in (original_required_step_ids or [])
     }
     outcomes = _build_step_outcomes(run_logs)
     if not outcomes:
@@ -500,6 +428,10 @@ def _task_completed_from_steps(
 
     if _answer_indicates_incomplete_task(final_answer):
         return False
+
+    if original_ids and len(required_ids) < len(original_ids) / 2:
+        if len(outcome_by_step) < len(original_ids) / 2:
+            return False
 
     return True
 
@@ -598,11 +530,12 @@ def _run_log_entry_from_state(state: "AgentState") -> dict:
         "step_retries_used": sum(step_retry_counts.values()),
         "step_retry_counts": step_retry_counts,
         "replan_count": state.get("replan_count", 0),
-        "replan_trigger": state.get("replan_reason"),
-        "replan_trigger_detail": state.get("replan_error"),
+        "replan_trigger": state.get("replan_trigger"),
         "replan_trigger_step": state.get("last_failed_step"),
-        "replan_trigger_action": state.get("replan_trigger_action"),
-        "replan_trigger_blocked_count": state.get("replan_trigger_blocked_count"),
+        "tool_shape_error_counts": dict(state.get("tool_shape_error_counts", {})),
+        "unplanned_step_block_counts": dict(state.get("unplanned_step_block_counts", {})),
+        "locked_step_block_counts": dict(state.get("locked_step_block_counts", {})),
+        "missing_source_step_counts": dict(state.get("missing_source_step_counts", {})),
         "iterations": list(state.get("current_run_log", [])),
         "final_sql": final_sql,
         "validation_error": state.get("last_validation_error"),

@@ -47,6 +47,7 @@ from backend.mcp.client.tools_steps import get_step_result
 from backend.embeddings.retrieve_layers import (
     build_retrieval_context,
     retrieve_database_candidates,
+    load_index,
 )
 from config import EMBEDDINGS_MIN_SCORE, EMBEDDINGS_TOP_K, EMBEDDINGS_TABLE_INDEX_PATH
 
@@ -218,10 +219,14 @@ async def agent(
 
 
         "sql_repair_counts": {},
-        "needs_replan": False,
-        "zero_rows_step": None,
+        "replan_trigger": None,
         "replan_count": 0,
         "unplanned_step_block_counts": {},
+        "tool_shape_error_counts": {},
+        "locked_step_block_counts": {},
+        "missing_source_step_counts": {},
+        "original_planned_steps": {},
+        "original_required_step_ids": set(),
     }
 
     state = init_state
@@ -507,8 +512,8 @@ async def main():
 
  
     queries = {
-        "B21": "Count all buildings in flood hazard areas in Kristiansand municipality.",
-
+            
+    "B44": "Identify parcels in Stavanger municipality that are located on agricultural land, overlap flood hazard areas, and also overlap soil- and flood-landslide hazard areas.",
 }
 
 
@@ -560,7 +565,11 @@ async def main():
 
     finally:
         await mcp_client.close()
+        load_index.cache_clear()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

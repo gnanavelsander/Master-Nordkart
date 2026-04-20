@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from typing import Any, Optional, TypedDict, Literal
-from pydantic import BaseModel, Field
 
 
 
@@ -37,6 +36,7 @@ class ModelParams:
     max_sql_repairs: int = 3
     max_step_retries: int = 3
     max_replans: int = 1
+    max_plan_steps: int = 8
     top_p: float | None = None
     reasoning_effort: str | None = None
 
@@ -189,14 +189,18 @@ class AgentState(TypedDict, total=False):
     retrieval_scope_active: bool
     retrieval_top_score: float | None
 
+    original_planned_steps: dict
+    original_required_step_ids: set
 
     sql_repair_counts: dict
     step_retry_counts: dict
 
-    needs_replan: bool
-    zero_rows_step: Optional[int]
-    replan_reason: Optional[str]
-    replan_error: Optional[str]
+    tool_shape_error_counts: dict
+    unplanned_step_block_counts: dict
+    locked_step_block_counts: dict
+    missing_source_step_counts: dict
+
+    replan_trigger: Optional[dict]
     replan_count: int
 
 
