@@ -512,9 +512,41 @@ async def main():
 
  
     queries = {
-        "q1": "find 10 buildings in grimstad",
-    }
+    "B1": "Count all buildings in Kristiansand municipality.",
+    "B2": "Find 10 disputed parcels in Bergen municipality, sorted by teigid ascending.",
+    "B3": "Find 10 garage buildings in Bergen municipality, sorted by bygningid ascending.",
+    "B4": "Find 10 buildings with status FA in Stavanger municipality, sorted by bygningid ascending.",
+    "B5": "Find 10 parcels larger than 5000 m² in Oslo municipality, sorted by lagretberegnetareal descending.",
+    "B6": "Find the building closest to the centroid of Bergen municipality.",
+    "B7": "Find 10 buildings located in forest areas in Trondheim municipality, sorted by bygningid ascending.",
+    "B8": "Find 10 parcels located in agricultural land in Stavanger municipality, sorted by teigid ascending.",
+    "B9": "Find 10 buildings located in built-up and transport areas in Oslo municipality, sorted by bygningid ascending.",
+    "B10": "Find 10 parcels located in forest areas in Kristiansand municipality, sorted by teigid ascending.",
 
+    "B11": "Find 10 parcels within 100 metres of flood hazard areas in Kristiansand municipality, sorted by shortest distance first.",
+    "B12": "Find 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo municipality, sorted by shortest distance first.",
+    "B13": "Find 10 buildings located in flood hazard areas in Bergen municipality, sorted by bygningid ascending.",
+    "B14": "Find 10 parcels that touch flood zones in Drammen municipality, sorted by teigid ascending.",
+    "B15": "Find 10 buildings located in soil- and flood-landslide hazard areas in Stavanger municipality, sorted by bygningid ascending.",
+    "B16": "Find 10 buildings located in quick-clay hazard areas in Trondheim municipality, sorted by bygningid ascending.",
+    "B17": "Find 10 parcels in Bergen municipality that contain storm-surge polygons, sorted by teigid ascending.",
+    "B18": "Find 10 buildings located in snow-avalanche hazard areas in Narvik municipality, sorted by bygningid ascending.",
+    "B19": "Find 10 parcels within 100 metres of quick-clay hazard areas in Trondheim municipality, sorted by shortest distance first.",
+    "B20": "Find 10 buildings that intersect a 100 metre buffer around flood hazard areas in Oslo municipality, sorted by bygningid ascending.",
+
+    "B21": "Count all buildings in flood hazard areas in Kristiansand municipality.",
+    "B22": "Count all parcels in flood hazard areas in Oslo municipality.",
+    "B23": "Count all buildings in quick-clay hazard areas in Trondheim municipality.",
+    "B24": "Count all parcels located in agricultural land in Stavanger municipality.",
+    "B25": "Count all buildings located in forest areas in Bergen municipality.",
+    "B26": "Find 10 buildings in Drammen municipality that intersect the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
+    "B27": "Find 10 parcels in Bergen municipality that intersect the union of flood hazard areas and storm-surge areas, sorted by teigid ascending.",
+    "B28": "Count all buildings in snow-avalanche hazard areas in Narvik municipality.",
+    "B29": "Find 10 parcels located in quick-clay hazard areas with high risk class in Trondheim municipality, sorted by teigid ascending.",
+    "B30": "Count all buildings located in built-up and transport areas in Oslo municipality.",
+
+
+}
 
     
     model_ids = ["gpt-5-mini"]
@@ -530,7 +562,7 @@ async def main():
         max_replans=2,
     )
 
-    prompt_name = "prompt_v1"
+    prompt_name = "evaluation_v1"
     prompt = load_prompt(prompt_name)
 
     try:

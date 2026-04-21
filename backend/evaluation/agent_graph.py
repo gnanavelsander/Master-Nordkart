@@ -400,19 +400,22 @@ def _replan_node(state: AgentState) -> AgentState:
     blocked_step = state.get("last_failed_step")
     step_registry = dict(state.get("step_registry", {}))
 
+    locked_ids = set(state.get("locked_step_ids", set()))
+
     def _step_line(k, v):
         db = v.get("database") or ""
         action = v.get("action") or "?"
         label = f"{action}/{db}" if db else action
         rows = v.get("rows_returned")
         sql = (v.get("sql") or "").strip()
+        locked_tag = " [LOCKED]" if str(k) in {str(s) for s in locked_ids} else ""
         if v.get("executed"):
-            line = f"  ok:     step {k} {label} — {rows} row{'s' if rows != 1 else ''}"
+            line = f"  ok:{locked_tag}   step {k} {label} — {rows} row{'s' if rows != 1 else ''}"
             if sql and action == "query":
                 line += f"\n          SQL: {sql}"
             return line
         elif v.get("validated"):
-            return f"  ok:     step {k} {label} — validated, not executed"
+            return f"  ok:{locked_tag}   step {k} {label} — validated, not executed"
         else:
             return f"  failed: step {k} {label} — not executed"
 
@@ -422,6 +425,12 @@ def _replan_node(state: AgentState) -> AgentState:
     ]
     steps_block = "\n".join(step_lines) if step_lines else "  (none)"
 
+    locked_step_nums = sorted(str(s) for s in locked_ids)
+    locked_note = (
+        f"\nLOCKED step numbers (do NOT reassign these): {', '.join(locked_step_nums)}"
+        if locked_step_nums else ""
+    )
+
     # unplanned_step / timeout_step → hard replan (replace conversation)
     # blocked_step / zero_rows_step → soft retry (append to conversation, preserve context)
     soft_retry = replan_reason in ("blocked_step", "zero_rows_step")
@@ -429,14 +438,14 @@ def _replan_node(state: AgentState) -> AgentState:
     if replan_reason == "unplanned_step":
         replan_msg = f"""Replan: incomplete plan — step {blocked_step} was needed but not in the original plan.
 
-{steps_block}
+{steps_block}{locked_note}
 
 These results are preserved. Build a new complete plan from here — do not re-execute completed steps.""".strip()
 
     elif replan_reason == "timeout_step":
         replan_msg = f"""Replan: step {blocked_step} timed out.
 
-{steps_block}
+{steps_block}{locked_note}
 
 Reason: {replan_error or "(no reason provided)"}
 
@@ -445,14 +454,14 @@ Build a new plan. Replace the timed-out step with a cheaper or more targeted app
     elif replan_reason == "blocked_step":
         replan_msg = f"""Step {blocked_step} was blocked and has been cleared — {replan_error or "(no reason provided)"}.
 
-{steps_block}
+{steps_block}{locked_note}
 
 Your discovery results are in the conversation above. Produce a new complete plan. You may reuse step {blocked_step} with a different approach. Include all required analytical steps (aggregate, sort, limit) — do not omit downstream steps.""".strip()
 
     else:
         replan_msg = f"""Step {zero_rows_step} returned 0 rows — it has been cleared so you can replace it.
 
-{steps_block}
+{steps_block}{locked_note}
 
 Produce a new complete plan. You may reuse step {zero_rows_step} with different SQL, or assign a new step number. Include all required analytical steps (aggregate, sort, limit) to fully answer the question. Options: fix the filter, try kommunenummer instead of kommunenavn, or remove the pre-filter and rely on a spatial join instead.""".strip()
 

@@ -244,6 +244,9 @@ def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
     prev = dict(step_registry.get(step_number, {}))
 
     if step_number in set(state.get("locked_step_ids", set())):
+        counts = dict(state.get("locked_step_block_counts", {}))
+        counts[str(step_number)] = counts.get(str(step_number), 0) + 1
+        state["locked_step_block_counts"] = counts
         return _block_step_result(
             "tool_validate_sql",
             f"Step {step_number} is locked after a successful validation/execution and cannot be changed.",

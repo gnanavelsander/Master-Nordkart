@@ -531,7 +531,10 @@ def _run_log_entry_from_state(state: "AgentState") -> dict:
         "step_retry_counts": step_retry_counts,
         "replan_count": state.get("replan_count", 0),
         "replan_trigger": state.get("replan_trigger"),
-        "replan_trigger_step": state.get("last_failed_step"),
+        "replan_trigger_step": (
+            (state.get("replan_trigger") or {}).get("zero_rows_step")
+            or state.get("last_failed_step")
+        ),
         "tool_shape_error_counts": dict(state.get("tool_shape_error_counts", {})),
         "unplanned_step_block_counts": dict(state.get("unplanned_step_block_counts", {})),
         "locked_step_block_counts": dict(state.get("locked_step_block_counts", {})),
