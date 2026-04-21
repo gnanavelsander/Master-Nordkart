@@ -512,12 +512,7 @@ async def main():
 
  
     queries = {
-    "B1": "Count all buildings in Kristiansand municipality.",
-    "B2": "Find 10 disputed parcels in Bergen municipality, sorted by teigid ascending.",
-    "B3": "Find 10 garage buildings in Bergen municipality, sorted by bygningid ascending.",
-    "B4": "Find 10 buildings with status FA in Stavanger municipality, sorted by bygningid ascending.",
-    "B5": "Find 10 parcels larger than 5000 m² in Oslo municipality, sorted by lagretberegnetareal descending.",
-    "B6": "Find the building closest to the centroid of Bergen municipality.",
+  
     "B7": "Find 10 buildings located in forest areas in Trondheim municipality, sorted by bygningid ascending.",
     "B8": "Find 10 parcels located in agricultural land in Stavanger municipality, sorted by teigid ascending.",
     "B9": "Find 10 buildings located in built-up and transport areas in Oslo municipality, sorted by bygningid ascending.",

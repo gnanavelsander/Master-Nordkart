@@ -563,6 +563,12 @@ def _route_after_tools(state: AgentState) -> str:
     max_replans = getattr(state.get("params"), "max_replans", 1)
 
     if state.get("replan_trigger") is not None:
+        trigger = state["replan_trigger"]
+        if trigger.get("reason") == "zero_rows_step":
+            step_key = str(trigger.get("zero_rows_step", ""))
+            count = state.get("zero_rows_replan_counts", {}).get(step_key, 0)
+            if count > 1:
+                return "finalize"  # same step returned 0 rows twice — stop looping
         if state.get("replan_count", 0) < max_replans:
             return "replan"
         return "finalize"  # replan budget exhausted

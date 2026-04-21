@@ -1098,6 +1098,9 @@ async def _tools_node(state: AgentState) -> AgentState:
                         )
                         if has_dependent_remaining:
                             step_number = step_obj.get("step") if isinstance(step_obj, dict) else None
+                            zero_rows_counts = dict(state.get("zero_rows_replan_counts", {}))
+                            zero_rows_counts[str(step_number)] = zero_rows_counts.get(str(step_number), 0) + 1
+                            state["zero_rows_replan_counts"] = zero_rows_counts
                             state["replan_trigger"] = {
                                 "reason": "zero_rows_step",
                                 "error": "planned step executed successfully but returned 0 rows",
