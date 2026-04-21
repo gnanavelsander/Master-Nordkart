@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -95,9 +96,7 @@ STEP_TOOLS: frozenset[str] = frozenset({
     "tool_execute_transform_crs_step",
 })
 
-NON_DISCOVERY_EXEC_TOOLS: frozenset[str] = frozenset({
-    "tool_get_route",
-})
+NON_DISCOVERY_EXEC_TOOLS: frozenset[str] = frozenset()
 
 
 
@@ -137,6 +136,22 @@ DUAL_SOURCE_ACTIONS: frozenset[str] = frozenset({
 
 
 
+
+def _zero_rows_sig(step_obj: dict) -> str:
+    payload = {
+        "action": step_obj.get("action"),
+        "database": step_obj.get("database"),
+        "sql": " ".join((step_obj.get("sql") or "").lower().split()),
+        "source_step": step_obj.get("source_step"),
+        "left_source": step_obj.get("left_source"),
+        "right_source": step_obj.get("right_source"),
+        "join_type": step_obj.get("join_type"),
+        "order_by": step_obj.get("order_by"),
+        "order_direction": step_obj.get("order_direction"),
+        "limit": step_obj.get("limit"),
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.md5(raw.encode()).hexdigest()[:16]
 
 def _normalize_tool_args(name: str, raw_args: dict, run_id: str) -> dict:
     """Inject run_id into step tool args. Model must send correct shape."""
@@ -1098,13 +1113,15 @@ async def _tools_node(state: AgentState) -> AgentState:
                         )
                         if has_dependent_remaining:
                             step_number = step_obj.get("step") if isinstance(step_obj, dict) else None
+                            sig = _zero_rows_sig(step_obj) if isinstance(step_obj, dict) else str(step_number)
                             zero_rows_counts = dict(state.get("zero_rows_replan_counts", {}))
-                            zero_rows_counts[str(step_number)] = zero_rows_counts.get(str(step_number), 0) + 1
+                            zero_rows_counts[sig] = zero_rows_counts.get(sig, 0) + 1
                             state["zero_rows_replan_counts"] = zero_rows_counts
                             state["replan_trigger"] = {
                                 "reason": "zero_rows_step",
                                 "error": "planned step executed successfully but returned 0 rows",
                                 "zero_rows_step": step_number,
+                                "zero_rows_sig": sig,
                             }
                             logger.info(
                                 "      [replan] Step %s returned 0 rows — %s dependent steps remain, flagging for replan",

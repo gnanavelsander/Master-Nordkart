@@ -110,13 +110,20 @@ def _extract_tables_from_available_tables_result(parsed: Any) -> list[str]:
 
 
 def _extract_databases_from_result(parsed: Any) -> list[str]:
+    def _name(x: Any) -> str | None:
+        if isinstance(x, str):
+            return x
+        if isinstance(x, dict):
+            return x.get("database") or x.get("name") or None
+        return None
+
     if isinstance(parsed, list):
-        return [x for x in parsed if isinstance(x, str)]
+        return [n for x in parsed if (n := _name(x))]
     if isinstance(parsed, dict):
-        if isinstance(parsed.get("databases"), list):
-            return [x for x in parsed["databases"] if isinstance(x, str)]
-        if isinstance(parsed.get("data"), list):
-            return [x for x in parsed["data"] if isinstance(x, str)]
+        for key in ("databases", "data"):
+            items = parsed.get(key)
+            if isinstance(items, list):
+                return [n for x in items if (n := _name(x))]
     return []
 
 
@@ -379,7 +386,11 @@ def _task_completed_from_steps(
     if not outcome_by_step:
         return False
 
-    steps_ok = all(step.get("executed", False) and step.get("status") == "ok" for step in outcomes)
+    steps_ok = all(
+        step.get("executed", False) and step.get("status") == "ok"
+        for step in outcomes
+        if _normalize_step_key(step.get("step")) in required_ids
+    )
     if not steps_ok:
         return False
 
@@ -410,7 +421,7 @@ def _task_completed_from_steps(
         }
 
         # Non-query steps (spatial_join, aggregate) must have run when required.
-        if required_non_query_actions and not (required_non_query_actions & executed_non_query_actions):
+        if required_non_query_actions and not required_non_query_actions.issubset(executed_non_query_actions):
             return False
 
         # Query steps:
@@ -597,6 +608,7 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
         required_step_ids=set(state.get("required_step_ids", set())),
         plan_finalized=state.get("plan_finalized", False),
         planned_steps=dict(state.get("planned_steps", {})),
+        original_required_step_ids=set(state.get("original_required_step_ids", set())),
     )
 
     steps = state.get("step_registry", {})

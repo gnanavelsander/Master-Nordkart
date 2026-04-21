@@ -200,6 +200,25 @@ async def _model_node(state: AgentState) -> AgentState:
     state["total_iterations"] = state.get("total_iterations", 0) + 1
     state["current_ai_is_final_answer"] = not bool(ai.tool_calls)
 
+    # If the model produced no tool calls and the plan is not yet finalized,
+    # it likely asked a clarification question. Inject a message to force progress.
+    if not ai.tool_calls and not state.get("plan_finalized", False):
+        count = state.get("clarification_block_count", 0) + 1
+        state["clarification_block_count"] = count
+        max_blocks = 2
+        if count <= max_blocks:
+            logger.warning(
+                "      [clarification-block] model stalled without plan (count=%d) — injecting proceed message",
+                count,
+            )
+            msgs = list(state["msgs"])
+            msgs.append(HumanMessage(content=(
+                "Do not ask for clarification. Proceed with the most reasonable interpretation "
+                "and produce a numbered plan, then start executing."
+            )))
+            state["msgs"] = msgs
+            state["current_ai_is_final_answer"] = False
+
     if not state.get("plan_finalized", False):
         planned_steps, required_step_ids = _extract_plan_from_text((ai.content or "").strip())
         if planned_steps:
@@ -381,6 +400,9 @@ def _route_after_model(state: AgentState) -> str:
     ai = state["current_ai"]
 
     if not ai.tool_calls:
+        # Send back to model if we injected a clarification-block message
+        if not state.get("plan_finalized", False) and state.get("clarification_block_count", 0) <= 2:
+            return "model"
         return "finalize"
 
     if state["iterations"] >= state["max_iterations"]:
@@ -400,22 +422,19 @@ def _replan_node(state: AgentState) -> AgentState:
     blocked_step = state.get("last_failed_step")
     step_registry = dict(state.get("step_registry", {}))
 
-    locked_ids = set(state.get("locked_step_ids", set()))
-
     def _step_line(k, v):
         db = v.get("database") or ""
         action = v.get("action") or "?"
         label = f"{action}/{db}" if db else action
         rows = v.get("rows_returned")
         sql = (v.get("sql") or "").strip()
-        locked_tag = " [LOCKED]" if str(k) in {str(s) for s in locked_ids} else ""
         if v.get("executed"):
-            line = f"  ok:{locked_tag}   step {k} {label} — {rows} row{'s' if rows != 1 else ''}"
+            line = f"  ok:   step {k} {label} — {rows} row{'s' if rows != 1 else ''}"
             if sql and action == "query":
                 line += f"\n          SQL: {sql}"
             return line
         elif v.get("validated"):
-            return f"  ok:{locked_tag}   step {k} {label} — validated, not executed"
+            return f"  ok:   step {k} {label} — validated, not executed"
         else:
             return f"  failed: step {k} {label} — not executed"
 
@@ -425,45 +444,39 @@ def _replan_node(state: AgentState) -> AgentState:
     ]
     steps_block = "\n".join(step_lines) if step_lines else "  (none)"
 
-    locked_step_nums = sorted(str(s) for s in locked_ids)
-    locked_note = (
-        f"\nLOCKED step numbers (do NOT reassign these): {', '.join(locked_step_nums)}"
-        if locked_step_nums else ""
-    )
-
-    # unplanned_step / timeout_step → hard replan (replace conversation)
-    # blocked_step / zero_rows_step → soft retry (append to conversation, preserve context)
+    # blocked_step / zero_rows_step → append replan message to conversation history
+    # unplanned_step / timeout_step → replace conversation (fresh context)
     soft_retry = replan_reason in ("blocked_step", "zero_rows_step")
 
     if replan_reason == "unplanned_step":
         replan_msg = f"""Replan: incomplete plan — step {blocked_step} was needed but not in the original plan.
 
-{steps_block}{locked_note}
+{steps_block}
 
-These results are preserved. Build a new complete plan from here — do not re-execute completed steps.""".strip()
+Previous results are shown above. Produce a new complete plan with fresh step numbering starting from 1.""".strip()
 
     elif replan_reason == "timeout_step":
         replan_msg = f"""Replan: step {blocked_step} timed out.
 
-{steps_block}{locked_note}
+{steps_block}
 
 Reason: {replan_error or "(no reason provided)"}
 
-Build a new plan. Replace the timed-out step with a cheaper or more targeted approach. Do not repeat the same query.""".strip()
+Produce a new complete plan with fresh step numbering starting from 1. Replace the timed-out step with a cheaper or more targeted approach.""".strip()
 
     elif replan_reason == "blocked_step":
-        replan_msg = f"""Step {blocked_step} was blocked and has been cleared — {replan_error or "(no reason provided)"}.
+        replan_msg = f"""Step {blocked_step} was blocked — {replan_error or "(no reason provided)"}.
 
-{steps_block}{locked_note}
+{steps_block}
 
-Your discovery results are in the conversation above. Produce a new complete plan. You may reuse step {blocked_step} with a different approach. Include all required analytical steps (aggregate, sort, limit) — do not omit downstream steps.""".strip()
+Produce a new complete plan with fresh step numbering starting from 1. Include all required analytical steps (aggregate, sort, limit).""".strip()
 
     else:
-        replan_msg = f"""Step {zero_rows_step} returned 0 rows — it has been cleared so you can replace it.
+        replan_msg = f"""Step {zero_rows_step} returned 0 rows.
 
-{steps_block}{locked_note}
+{steps_block}
 
-Produce a new complete plan. You may reuse step {zero_rows_step} with different SQL, or assign a new step number. Include all required analytical steps (aggregate, sort, limit) to fully answer the question. Options: fix the filter, try kommunenummer instead of kommunenavn, or remove the pre-filter and rely on a spatial join instead.""".strip()
+Produce a new complete plan with fresh step numbering starting from 1. Options: fix the filter, try kommunenummer instead of kommunenavn, or remove the pre-filter and rely on a spatial join instead. Include all required downstream steps (aggregate, sort, limit).""".strip()
 
     all_run_logs = list(state.get("all_run_logs", []))
     if state.get("current_run_log"):
@@ -495,6 +508,14 @@ Produce a new complete plan. You may reuse step {zero_rows_step} with different 
         "missing_source_step_counts": {},
         "planned_steps": {},
         "required_step_ids": set(),
+        "step_registry": {},
+        "locked_step_ids": set(),
+        "validated_sqls": {},
+        "step_retry_counts": {},
+        "sql_repair_counts": {},
+        "original_planned_steps": {},
+        "original_required_step_ids": set(),
+        "clarification_block_count": 0,
         "replan_trigger": None,
         "replan_count": state.get("replan_count", 0) + 1,
         "current_ai_is_final_answer": False,
@@ -516,44 +537,10 @@ Produce a new complete plan. You may reuse step {zero_rows_step} with different 
         ),
     }
 
-    # For zero_rows and blocked_step: unregister the failing step so the model can
-    # replace it. Successfully completed earlier steps stay locked.
-    failing_step_key: str | None = None
-    if replan_reason == "zero_rows_step" and zero_rows_step is not None:
-        failing_step_key = str(zero_rows_step)
-    elif replan_reason == "blocked_step" and blocked_step is not None:
-        failing_step_key = str(blocked_step)
-
-    if failing_step_key is not None:
-        retained_registry = {k: v for k, v in step_registry.items() if str(k) != failing_step_key}
-        retained_locked = {sid for sid in state.get("locked_step_ids", set()) if str(sid) != failing_step_key}
-        shared_reset["step_registry"] = retained_registry
-        shared_reset["locked_step_ids"] = retained_locked
-        # Reset retry/repair budgets for the unregistered step so it gets a fresh attempt
-        shared_reset["step_retry_counts"] = {
-            k: v for k, v in state.get("step_retry_counts", {}).items()
-            if str(k) != failing_step_key
-        }
-        shared_reset["sql_repair_counts"] = {
-            k: v for k, v in state.get("sql_repair_counts", {}).items()
-            if str(k) != failing_step_key
-        }
-
-    if soft_retry or replan_reason == "unplanned_step":
-        # Soft retry / partial reset — preserve completed steps and locked state
-        new_state = {
-            **state,
-            **shared_reset,
-        }
-    else:
-        # Full reset — timeout requires fresh start
-        new_state = {
-            **state,
-            **shared_reset,
-            "step_registry": {},
-            "locked_step_ids": set(),
-            "validated_sqls": {},
-        }
+    new_state = {
+        **state,
+        **shared_reset,
+    }
 
     new_state["crash_snapshot"] = _build_snapshot(new_state)
     return new_state
@@ -565,10 +552,10 @@ def _route_after_tools(state: AgentState) -> str:
     if state.get("replan_trigger") is not None:
         trigger = state["replan_trigger"]
         if trigger.get("reason") == "zero_rows_step":
-            step_key = str(trigger.get("zero_rows_step", ""))
-            count = state.get("zero_rows_replan_counts", {}).get(step_key, 0)
+            sig = trigger.get("zero_rows_sig", "")
+            count = state.get("zero_rows_replan_counts", {}).get(sig, 0) if sig else 0
             if count > 1:
-                return "finalize"  # same step returned 0 rows twice — stop looping
+                return "finalize"  # same query returned 0 rows twice — stop looping
         if state.get("replan_count", 0) < max_replans:
             return "replan"
         return "finalize"  # replan budget exhausted
@@ -615,7 +602,7 @@ def _build_agent_graph():
 
     graph.add_conditional_edges(
         "model", _route_after_model,
-        {"tools": "tools", "finalize": "finalize"},
+        {"tools": "tools", "finalize": "finalize", "model": "model"},
     )
     graph.add_conditional_edges(
         "tools", _route_after_tools,

@@ -32,6 +32,7 @@ PGCONN_STEDSNAVN_GIS = os.getenv("PGCONN_STEDSNAVN_GIS")
 
 
 PGCONN_AREALRESSURSKART_AR50 = os.getenv("PGCONN_AREALRESSURSKART_AR50")
+PGCONN_STORMFLOHAVNIVA_GIS = os.getenv("PGCONN_STORMFLOHAVNIVA_GIS")
 
 
 
@@ -74,8 +75,13 @@ AZURE_MODEL_DEPLOYMENT = {
     "grok-3-mini":           "grok-3-mini",
     "grok-3":                "grok-3",
     "DeepSeek-V3-0324":      "DeepSeek-V3-0324",
+    "DeepSeek-V3.1":           "DeepSeek-V3.1",
+    "DeepSeek-V3.2":         "DeepSeek-V3.2",
     "Cohere-command-r":      "Cohere-command-r-08-2024",
     "Phi-4":                 "Phi-4",
+    # Anthropic Claude via Azure Foundry
+    "claude-haiku-4-5":      "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-5":     "claude-sonnet-4-5-20251014",
 }
 
 AZURE_OPENAI_MODEL_IDS = {
@@ -158,9 +164,9 @@ OLLAMA_MODEL_IDS = {
 
 
 AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-AZURE_STORAGE_CONTAINER = "llmevaluator"
+AZURE_STORAGE_CONTAINER = "result"
 
-
+STORAGE_VERSION = os.getenv("STORAGE_VERSION", "run_1") 
 
 
 DB_DESCRIPTIONS = {

@@ -113,44 +113,51 @@ async def agent(
     retrieval_scope_active = False
     retrieval_top_score: float | None = None
 
-    try:
-        retrieval_candidates = retrieve_database_candidates(
-            user_input,
-            k=EMBEDDINGS_TOP_K,
-            index_path=EMBEDDINGS_TABLE_INDEX_PATH,
-        )
-        top_score = retrieval_candidates[0]["score"] if retrieval_candidates else -1.0
-        retrieval_top_score = top_score if retrieval_candidates else None
-        retrieval_scope_active = bool(retrieval_candidates) and top_score >= EMBEDDINGS_MIN_SCORE
-        retrieval_context = build_retrieval_context(retrieval_candidates)
-        if retrieval_context and not retrieval_scope_active:
-            retrieval_context += (
-                "\nFallback note: retrieval confidence is low, so broader discovery tools remain available."
-            )
-        logger.info(
-            "[RETRIEVAL][%s] candidates=%s scope_active=%s top_score=%.3f",
-            model_id,
-            [f"{c.get('database')}={c.get('score', -1):.3f}" for c in retrieval_candidates],
-            retrieval_scope_active,
-            top_score,
-        )
-    except Exception as e:
-        logger.warning("[RETRIEVAL][%s] failed: %s", model_id, e)
+    # --- EMBEDDING RETRIEVAL DISABLED ---
+    # Uncomment to re-enable embedding-based database retrieval and prefetch.
+    #
+    # try:
+    #     retrieval_candidates = retrieve_database_candidates(
+    #         user_input,
+    #         k=EMBEDDINGS_TOP_K,
+    #         index_path=EMBEDDINGS_TABLE_INDEX_PATH,
+    #     )
+    #     top_score = retrieval_candidates[0]["score"] if retrieval_candidates else -1.0
+    #     retrieval_top_score = top_score if retrieval_candidates else None
+    #     retrieval_scope_active = bool(retrieval_candidates) and top_score >= EMBEDDINGS_MIN_SCORE
+    #     retrieval_context = build_retrieval_context(retrieval_candidates)
+    #     if retrieval_context and not retrieval_scope_active:
+    #         retrieval_context += (
+    #             "\nFallback note: retrieval confidence is low, so broader discovery tools remain available."
+    #         )
+    #     logger.info(
+    #         "[RETRIEVAL][%s] candidates=%s scope_active=%s top_score=%.3f",
+    #         model_id,
+    #         [f"{c.get('database')}={c.get('score', -1):.3f}" for c in retrieval_candidates],
+    #         retrieval_scope_active,
+    #         top_score,
+    #     )
+    # except Exception as e:
+    #     logger.warning("[RETRIEVAL][%s] failed: %s", model_id, e)
+    #
+    # preferred_databases = _candidate_database_order(retrieval_candidates)
+    # seeded_databases = list(preferred_databases)
+    # seeded_tables: list[str] = []
+    #
+    # if preferred_databases:
+    #     try:
+    #         prefetch_result = await prefetch_databases(preferred_databases)
+    #         logger.info(
+    #             "[RETRIEVAL][%s] prefetched_databases=%s",
+    #             model_id,
+    #             prefetch_result.get("opened", preferred_databases) if isinstance(prefetch_result, dict) else preferred_databases,
+    #         )
+    #     except Exception as e:
+    #         logger.warning("[RETRIEVAL][%s] database prefetch failed: %s", model_id, e)
+    # --- END EMBEDDING RETRIEVAL ---
 
-    preferred_databases = _candidate_database_order(retrieval_candidates)
-    seeded_databases = list(preferred_databases)
+    seeded_databases: list[str] = []
     seeded_tables: list[str] = []
-
-    if preferred_databases:
-        try:
-            prefetch_result = await prefetch_databases(preferred_databases)
-            logger.info(
-                "[RETRIEVAL][%s] prefetched_databases=%s",
-                model_id,
-                prefetch_result.get("opened", preferred_databases) if isinstance(prefetch_result, dict) else preferred_databases,
-            )
-        except Exception as e:
-            logger.warning("[RETRIEVAL][%s] database prefetch failed: %s", model_id, e)
 
     msgs = [SystemMessage(content=prompt)]
     if retrieval_context:
@@ -227,6 +234,8 @@ async def agent(
         "missing_source_step_counts": {},
         "original_planned_steps": {},
         "original_required_step_ids": set(),
+        "zero_rows_replan_counts": {},
+        "clarification_block_count": 0,
     }
 
     state = init_state
@@ -512,36 +521,59 @@ async def main():
 
  
     queries = {
-  
-    "B7": "Find 10 buildings located in forest areas in Trondheim municipality, sorted by bygningid ascending.",
-    "B8": "Find 10 parcels located in agricultural land in Stavanger municipality, sorted by teigid ascending.",
-    "B9": "Find 10 buildings located in built-up and transport areas in Oslo municipality, sorted by bygningid ascending.",
-    "B10": "Find 10 parcels located in forest areas in Kristiansand municipality, sorted by teigid ascending.",
 
-    "B11": "Find 10 parcels within 100 metres of flood hazard areas in Kristiansand municipality, sorted by shortest distance first.",
-    "B12": "Find 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo municipality, sorted by shortest distance first.",
-    "B13": "Find 10 buildings located in flood hazard areas in Bergen municipality, sorted by bygningid ascending.",
-    "B14": "Find 10 parcels that touch flood zones in Drammen municipality, sorted by teigid ascending.",
-    "B15": "Find 10 buildings located in soil- and flood-landslide hazard areas in Stavanger municipality, sorted by bygningid ascending.",
-    "B16": "Find 10 buildings located in quick-clay hazard areas in Trondheim municipality, sorted by bygningid ascending.",
-    "B17": "Find 10 parcels in Bergen municipality that contain storm-surge polygons, sorted by teigid ascending.",
-    "B18": "Find 10 buildings located in snow-avalanche hazard areas in Narvik municipality, sorted by bygningid ascending.",
-    "B19": "Find 10 parcels within 100 metres of quick-clay hazard areas in Trondheim municipality, sorted by shortest distance first.",
-    "B20": "Find 10 buildings that intersect a 100 metre buffer around flood hazard areas in Oslo municipality, sorted by bygningid ascending.",
+        "B8": "Find 10 parcels in Stavanger municipality that are within agricultural land polygons, sorted by teigid ascending.",
+        "B9": "Find 10 buildings located in built-up and transport areas in Oslo municipality, sorted by bygningid ascending.",
+        "B10": "Find 10 parcels located in forest areas in Kristiansand municipality, sorted by teigid ascending.",
 
-    "B21": "Count all buildings in flood hazard areas in Kristiansand municipality.",
-    "B22": "Count all parcels in flood hazard areas in Oslo municipality.",
-    "B23": "Count all buildings in quick-clay hazard areas in Trondheim municipality.",
-    "B24": "Count all parcels located in agricultural land in Stavanger municipality.",
-    "B25": "Count all buildings located in forest areas in Bergen municipality.",
-    "B26": "Find 10 buildings in Drammen municipality that intersect the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
-    "B27": "Find 10 parcels in Bergen municipality that intersect the union of flood hazard areas and storm-surge areas, sorted by teigid ascending.",
-    "B28": "Count all buildings in snow-avalanche hazard areas in Narvik municipality.",
-    "B29": "Find 10 parcels located in quick-clay hazard areas with high risk class in Trondheim municipality, sorted by teigid ascending.",
-    "B30": "Count all buildings located in built-up and transport areas in Oslo municipality.",
+        # Level 2: single-hazard overlays, touch/contain predicates, and proximity
+        "B11": "Find 10 buildings located in flood hazard areas in Bergen municipality, sorted by bygningid ascending.",
+        "B12": "Find 10 buildings located in soil- and flood-landslide hazard areas in Stavanger municipality, sorted by bygningid ascending.",
+        "B13": "Find 10 buildings located in quick-clay hazard areas in Trondheim municipality, sorted by bygningid ascending.",
+        "B14": "Find 10 buildings located in snow-avalanche hazard areas in Narvik municipality, sorted by bygningid ascending.",
+        "B15": "Find 10 parcels that touch flood zones in Drammen municipality, sorted by teigid ascending.",
+        "B16": "Find 10 parcels within 100 metres of flood hazard areas in Kristiansand municipality, sorted by shortest distance first.",
+        "B17": "Find 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo municipality, sorted by shortest distance first.",
+        "B18": "Find 10 parcels within 100 metres of quick-clay hazard areas in Trondheim municipality, sorted by shortest distance first.",
+        "B19": "Find 10 buildings that intersect a 100 metre buffer around flood hazard areas in Oslo municipality, sorted by bygningid ascending.",
+        "B20": "Find 10 parcels in Bergen municipality that contain storm-surge polygons, sorted by teigid ascending.",
 
+        # Level 3: counts, set operations, and moderate multi-step spatial filtering
+        "B21": "Count all buildings in flood hazard areas in Kristiansand municipality.",
+        "B22": "Count all parcels in flood hazard areas in Oslo municipality.",
+        "B23": "Count all buildings in quick-clay hazard areas in Trondheim municipality.",
+        "B24": "Count all parcels located in agricultural land in Stavanger municipality.",
+        "B25": "Count all buildings located in forest areas in Bergen municipality.",
+        "B26": "Count all buildings located in built-up and transport areas in Oslo municipality.",
+        "B27": "Count all buildings in snow-avalanche hazard areas in Narvik municipality.",
+        "B28": "Find 10 parcels located in quick-clay hazard areas with high risk class in Trondheim municipality, sorted by teigid ascending.",
+        "B29": "Find 10 buildings in Drammen municipality that intersect the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
+        "B30": "Find 10 parcels in Bergen municipality that intersect the union of flood hazard areas and storm-surge areas, sorted by teigid ascending.",
 
-}
+        # Level 4: dual-condition queries and county/municipality aggregations
+        "B31": "Find 10 buildings in Kristiansand municipality that are located both in flood hazard areas and on agricultural land, sorted by bygningid ascending.",
+        "B32": "Find 10 buildings in Oslo municipality that are exposed to both flood hazard areas and soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
+        "B33": "Find 10 buildings in Stavanger municipality that are located on agricultural land and within soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
+        "B34": "Find 10 parcels in Trondheim municipality that are located in both flood hazard areas and quick-clay hazard areas, sorted by teigid ascending.",
+        "B35": "Find 10 buildings in Bergen municipality that are exposed to both storm-surge areas and flood hazard areas, sorted by bygningid ascending.",
+        "B36": "Find 10 parcels in Kristiansand municipality that are located on agricultural land and within flood hazard areas, sorted by teigid ascending.",
+        "B37": "Find 10 buildings in Bergen municipality that are located in storm-surge areas, sorted by bygningid ascending, and report both municipality and county.",
+        "B38": "List the five municipalities in Vestland county with the highest number of buildings in flood hazard areas, sorted by count descending.",
+        "B39": "Provide a municipality-level overview of buildings located in quick-clay hazard areas in Trøndelag county.",
+        "B40": "Provide a municipality-level summary of parcels in Agder county that are located in agricultural land and also overlap flood hazard areas.",
+
+        # Level 5: advanced overlay logic, grid/clipping/dissolve work, and multi-hazard summaries
+        "B41": "Provide a municipality-level comparison of buildings exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas in Agder county.",
+        "B42": "Find 10 buildings in Drammen municipality that are within the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
+        "B43": "Find 10 parcels in Stavanger municipality that are located on agricultural land and overlap flood hazard areas but not soil- and flood-landslide hazard areas, sorted by teigid ascending.",
+        "B44": "Provide a municipality-level summary of parcels intersecting dissolved storm-surge areas in Nordland county.",
+        "B45": "Provide a 1000 m grid-based summary of buildings exposed to flood hazard areas in Oslo municipality, using a common CRS for all layers, and highlight the grid cells with the highest counts.",
+        "B46": "Classify municipalities in Vestland county based on the number of buildings exposed to flood hazard areas, quick-clay hazard areas, and storm-surge areas.",
+        "B47": "Find 10 buildings in Trondheim municipality that are exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas at the same time, sorted by bygningid ascending.",
+        "B48": "Find 10 buildings in Bergen municipality that are contained in both storm-surge areas and the 200-year flood zone, sorted by bygningid ascending.",
+        "B49": "Summarize buildings in Innlandet county that are located in forest areas and in flood hazard areas clipped to the county boundary.",
+        "B50": "Summarize which municipalities in Rogaland county have the greatest concentration of parcels exposed to both flood hazard areas and storm-surge areas.",
+    }
 
     
     model_ids = ["gpt-5-mini"]
@@ -551,7 +583,7 @@ async def main():
         max_tokens=2000,
         timeout=300,
         max_retries=0,
-        max_iterations=50,
+        max_iterations=30,
         max_sql_repairs=3,
         max_step_retries=3,
         max_replans=2,

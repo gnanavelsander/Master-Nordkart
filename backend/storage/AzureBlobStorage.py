@@ -51,6 +51,17 @@ def query_meta_exists(q_hash: str) -> bool:
         return False
 
 
+def prompt_meta_exists(q_hash: str, prompt_name: str) -> bool:
+    try:
+        _get_blob_service().get_blob_client(
+            container=AZURE_STORAGE_CONTAINER,
+            blob=f"{src}/{q_hash}/{prompt_name}/prompt.txt",
+        ).get_blob_properties()
+        return True
+    except Exception:
+        return False
+
+
 def _download_json(path: str) -> Any:
     try:
         data = _get_blob_service().get_blob_client(
@@ -62,17 +73,29 @@ def _download_json(path: str) -> Any:
         return None
 
 
-def _update_queries_index(q_hash: str, query: str, query_id: str | None = None):
+def _update_queries_index(
+    q_hash: str,
+    query: str,
+    summary: list,
+    prompt_name: str,
+    query_id: str | None = None,
+):
     path = f"{src}/index.json"
     index = _download_json(path) or []
 
+    new_breakdown_keys = [
+        f"{s['model_id']}::{prompt_name}" for s in summary if s.get("model_id")
+    ]
+
     if not any(e["query_hash"] == q_hash for e in index):
+        breakdown = {k: 1 for k in new_breakdown_keys}
         index.append({
             "query_id": query_id,
             "query_hash": q_hash,
             "query": query,
             "first_run": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "total_runs": 1,
+            "breakdown": breakdown,
         })
     else:
         for e in index:
@@ -80,18 +103,30 @@ def _update_queries_index(q_hash: str, query: str, query_id: str | None = None):
                 e["total_runs"] += 1
                 if query_id and not e.get("query_id"):
                     e["query_id"] = query_id
+                breakdown = e.get("breakdown", {})
+                for k in new_breakdown_keys:
+                    breakdown[k] = breakdown.get(k, 0) + 1
+                e["breakdown"] = breakdown
 
     upload(path, index)
 
 
-def _update_runs_index(q_hash: str, run_id: str, summary: list):
-    path = f"{src}/{q_hash}/runs/index.json"
+def _update_runs_index(
+    q_hash: str,
+    run_id: str,
+    summary: list,
+    prompt_name: str,
+    embedding_active: bool,
+):
+    path = f"{src}/{q_hash}/{prompt_name}/runs/index.json"
     index = _download_json(path) or []
 
     index.append({
         "run_id": run_id,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "models_run": [s["model_id"] for s in summary],
+        "prompt_name": prompt_name,
+        "embedding_active": embedding_active,
     })
 
     upload(path, index)

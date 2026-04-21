@@ -133,8 +133,9 @@ def _step_issue_summaries(run_logs: list | None) -> tuple[list[dict], list[dict]
             if _is_pre_plan_guard_error(iteration_error):
                 continue
 
-            meta = dict(step_registry.get(failed_step, {}))
-            issues_by_step.setdefault(failed_step, []).append(
+            step_key = str(failed_step)
+            meta = dict(step_registry.get(step_key, {}))
+            issues_by_step.setdefault(step_key, []).append(
                 {
                     "step": failed_step,
                     "action": meta.get("action"),
@@ -142,8 +143,8 @@ def _step_issue_summaries(run_logs: list | None) -> tuple[list[dict], list[dict]
                     "database": meta.get("database"),
                     "sql": meta.get("sql"),
                     "error": iteration_error,
-                    "sql_repairs": sql_repairs_by_step.get(failed_step, 0),
-                    "step_retries": step_retries_by_step.get(failed_step, 0),
+                    "sql_repairs": sql_repairs_by_step.get(step_key, 0),
+                    "step_retries": step_retries_by_step.get(step_key, 0),
                     "recovered": bool(meta.get("executed")) and meta.get("status") == "ok",
                 }
             )
