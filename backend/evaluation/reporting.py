@@ -29,6 +29,7 @@ from backend.storage.AzureBlobStorage import (
     upload,
     query_hash,
     query_meta_exists,
+    prompt_meta_exists,
     _update_queries_index,
     _update_runs_index,
     src as STORAGE_VERSION,
@@ -846,7 +847,7 @@ async def store_run(run: EvalRun, results: list) -> str:
     run_id = uuid.uuid4().hex
 
 
-    base = f"{STORAGE_VERSION}/{q_hash}/runs/{run_id}"
+    base = f"{STORAGE_VERSION}/{q_hash}/{run.prompt_name}/runs/{run_id}"
 
     loop = asyncio.get_running_loop()
 
@@ -857,16 +858,19 @@ async def store_run(run: EvalRun, results: list) -> str:
             logger.warning("upload failed [%s]: %s", path, e)
 
     try:
-        _update_queries_index(q_hash, run.query, run.query_id)
         if not query_meta_exists(q_hash):
             await _upload(
                 f"{STORAGE_VERSION}/{q_hash}/query.json",
                 {"query_id": run.query_id, "query": run.query, "query_hash": q_hash},
             )
     except Exception as e:
-        logger.warning("Failed to update query index: %s", e)
+        logger.warning("Failed to upload query meta: %s", e)
 
-    await _upload(f"{base}/prompt.txt", load_prompt(run.prompt_name))
+    if not prompt_meta_exists(q_hash, run.prompt_name):
+        await _upload(
+            f"{STORAGE_VERSION}/{q_hash}/{run.prompt_name}/prompt.txt",
+            load_prompt(run.prompt_name),
+        )
 
     summary = []
     normalized_docs = []
@@ -1099,8 +1103,15 @@ async def store_run(run: EvalRun, results: list) -> str:
         },
     )
 
+    embedding_active = any(s.get("retrieval_scope_active") for s in summary)
+
     try:
-        _update_runs_index(q_hash, run_id, summary)
+        _update_queries_index(q_hash, run.query, summary, run.prompt_name, run.query_id)
+    except Exception as e:
+        logger.warning("Failed to update queries index: %s", e)
+
+    try:
+        _update_runs_index(q_hash, run_id, summary, run.prompt_name, embedding_active)
     except Exception as e:
         logger.warning("Failed to update runs index: %s", e)
 

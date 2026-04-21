@@ -35,6 +35,7 @@ from agent_helpers import (
 )
 from backend.tools.langchain_tools import (
     tool_get_available_databases,
+    tool_get_available_tables,
     tool_get_table_schema,
     tool_get_database_catalog,
     tool_get_route,
@@ -972,7 +973,7 @@ def _build_step_event(state: "AgentState", name: str, raw_args: dict, args: dict
 
 def _get_tools():
     return [
-        tool_get_route,
+        tool_get_available_tables, 
         tool_get_available_databases,
         tool_get_table_schema,
         tool_get_database_catalog,

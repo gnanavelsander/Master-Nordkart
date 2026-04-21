@@ -512,9 +512,8 @@ async def main():
 
  
     queries = {
-            
-    "B44": "Identify parcels in Stavanger municipality that are located on agricultural land, overlap flood hazard areas, and also overlap soil- and flood-landslide hazard areas.",
-}
+        "q1": "find 10 buildings in grimstad",
+    }
 
 
     
@@ -531,7 +530,7 @@ async def main():
         max_replans=2,
     )
 
-    prompt_name = "evaluation_v1"
+    prompt_name = "prompt_v1"
     prompt = load_prompt(prompt_name)
 
     try:

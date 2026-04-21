@@ -551,15 +551,22 @@ Produce a new complete plan. You may reuse step {zero_rows_step} with different 
 
 
 def _route_after_tools(state: AgentState) -> str:
-    # Replan takes priority — 0-rows or timeout with required steps remaining
+    max_replans = getattr(state.get("params"), "max_replans", 1)
+
     if state.get("replan_trigger") is not None:
-        max_replans = getattr(state.get("params"), "max_replans", 1)
         if state.get("replan_count", 0) < max_replans:
             return "replan"
-        return "finalize"  # replan budget exhausted — finalize directly
+        return "finalize"  # replan budget exhausted
+
+    # exit early if replan budget exhausted and plan never finalized
+    if (
+        state.get("replan_count", 0) >= max_replans
+        and not state.get("plan_finalized", False)
+    ):
+        return "finalize"
 
     if state.get("iterations", 0) >= state.get("max_iterations", 0):
-        return "finalize"  # sql_repair/restart deactivated — finalize directly
+        return "finalize"
 
     return "model"
 
