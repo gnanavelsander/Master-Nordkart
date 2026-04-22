@@ -531,59 +531,51 @@ async def main():
 
  
     queries = {
+    "B1":  "Count all buildings in Kristiansand municipality.",
+    "B2":  "Find 10 disputed parcels in Bergen municipality, sorted by teigid ascending.",
+    "B3":  "Find 10 buildings with status FA in Stavanger municipality, sorted by bygningid ascending.",
+    "B4":  "Find 10 parcels larger than 5000 m² in Oslo municipality, sorted by lagretberegnetareal descending.",
+    "B5":  "Find the building closest to the centroid of Bergen municipality.",
+    "B6":  "Count all parcels in flood hazard areas in Oslo municipality.",
+    "B7":  "Count all buildings in quick-clay hazard areas in Trondheim municipality.",
+    "B8":  "Count all buildings in snow-avalanche hazard areas in Narvik municipality.",
 
-       # "B9": "Find 10 buildings located in built-up and transport areas in Oslo municipality, sorted by bygningid ascending.",
-        #"B10": "Find 10 parcels located in forest areas in Kristiansand municipality, sorted by teigid ascending.",
+    "B9":  "Find 10 garage buildings in Bergen municipality, sorted by bygningid ascending.",
+    "B10": "Find 10 buildings located in forest areas in Trondheim municipality, sorted by bygningid ascending.",
+    "B11": "Find 10 parcels located in agricultural land in Stavanger municipality, sorted by teigid ascending.",
+    "B12": "Find 10 buildings located in built-up and transport areas in Oslo municipality, sorted by bygningid ascending.",
+    "B13": "Find 10 buildings located in flood hazard areas in Bergen municipality, sorted by bygningid ascending.",
+    "B14": "Find 10 buildings located in soil- and flood-landslide hazard areas in Stavanger municipality, sorted by bygningid ascending.",
+    "B15": "Find 10 buildings located in quick-clay hazard areas in Trondheim municipality, sorted by bygningid ascending.",
+    "B16": "Count all buildings located in forest areas in Bergen municipality.",
 
-        # Level 2: single-hazard overlays, touch/contain predicates, and proximity
-        #"B11": "Find 10 buildings located in flood hazard areas in Bergen municipality, sorted by bygningid ascending.",
-        #"B12": "Find 10 buildings located in soil- and flood-landslide hazard areas in Stavanger municipality, sorted by bygningid ascending.",
-        #"B13": "Find 10 buildings located in quick-clay hazard areas in Trondheim municipality, sorted by bygningid ascending.",
-        #"B14": "Find 10 buildings located in snow-avalanche hazard areas in Narvik municipality, sorted by bygningid ascending.",
-        #"B15": "Find 10 parcels that touch flood zones in Drammen municipality, sorted by teigid ascending.", problemer med ram
-        # "B16": "Find 10 parcels within 100 metres of flood hazard areas in Kristiansand municipality, sorted by shortest distance first.",
-        # "B17": "Find 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo municipality, sorted by shortest distance first.",
-        # "B18": "Find 10 parcels within 100 metres of quick-clay hazard areas in Trondheim municipality, sorted by shortest distance first.",
-        # "B19": "Find 10 buildings that intersect a 100 metre buffer around flood hazard areas in Oslo municipality, sorted by bygningid ascending.",
-        # "B20": "Find 10 parcels in Bergen municipality that contain storm-surge polygons, sorted by teigid ascending.",
+    "B17": "Find 10 buildings located in snow-avalanche hazard areas in Narvik municipality, sorted by bygningid ascending.",
+    "B18": "Find 10 parcels that touch flood zones in Drammen municipality, sorted by teigid ascending.",
+    "B19": "Find 10 parcels within 100 metres of flood hazard areas in Kristiansand municipality, sorted by shortest distance first.",
+    "B20": "Find 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo municipality, sorted by shortest distance first.",
+    "B21": "Find 10 parcels within 100 metres of quick-clay hazard areas in Trondheim municipality, sorted by shortest distance first.",
+    "B22": "Find 10 buildings that intersect a 100 metre buffer around flood hazard areas in Oslo municipality, sorted by bygningid ascending.",
+    "B23": "Find 10 parcels in Bergen municipality that contain storm-surge polygons, sorted by teigid ascending.",
+    "B24": "Count all buildings located in built-up and transport areas in Oslo municipality.",
 
-        # # Level 3: counts, set operations, and moderate multi-step spatial filtering
-        # "B21": "Count all buildings in flood hazard areas in Kristiansand municipality.",
-        # "B22": "Count all parcels in flood hazard areas in Oslo municipality.",
-        # "B23": "Count all buildings in quick-clay hazard areas in Trondheim municipality.",
-        # "B24": "Count all parcels located in agricultural land in Stavanger municipality.",
-        # "B25": "Count all buildings located in forest areas in Bergen municipality.",
-        "B26": "Count all buildings located in built-up and transport areas in Oslo municipality.",
-        "B27": "Count all buildings in snow-avalanche hazard areas in Narvik municipality.",
-        "B28": "Find 10 parcels located in quick-clay hazard areas with high risk class in Trondheim municipality, sorted by teigid ascending.",
-        "B29": "Find 10 buildings in Drammen municipality that intersect the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
-        #"B30": "Find 10 parcels in Bergen municipality that intersect the union of flood hazard areas and storm-surge areas, sorted by teigid ascending.",
+    "B25": "Count all buildings in flood hazard areas in Kristiansand municipality.",
+    "B26": "Find 10 parcels located in quick-clay hazard areas with high risk class in Trondheim municipality, sorted by teigid ascending.",
+    "B27": "Find 10 buildings in Drammen municipality that intersect the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
+    "B28": "Find 10 buildings in Kristiansand municipality that are located both in flood hazard areas and on agricultural land, sorted by bygningid ascending.",
+    "B29": "Find 10 buildings in Oslo municipality that are exposed to both flood hazard areas and soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
+    "B30": "Find 10 buildings in Stavanger municipality that are located on agricultural land and within soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
+    "B31": "Find 10 parcels in Trondheim municipality that are located in both flood hazard areas and quick-clay hazard areas, sorted by teigid ascending.",
+    "B32": "Find 10 buildings in Bergen municipality that are exposed to both storm-surge areas and flood hazard areas, sorted by bygningid ascending.",
 
-        # Level 4: dual-condition queries and county/municipality aggregations
-        #"B31": "Find 10 buildings in Kristiansand municipality that are located both in flood hazard areas and on agricultural land, sorted by bygningid ascending.",
-        # "B32": "Find 10 buildings in Oslo municipality that are exposed to both flood hazard areas and soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
-        # "B33": "Find 10 buildings in Stavanger municipality that are located on agricultural land and within soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
-        #"B34": "Find 10 parcels in Trondheim municipality that are located in both flood hazard areas and quick-clay hazard areas, sorted by teigid ascending.",
-        "B35": "Find 10 buildings in Bergen municipality that are exposed to both storm-surge areas and flood hazard areas, sorted by bygningid ascending.",
-        "B36": "Find 10 parcels in Kristiansand municipality that are located on agricultural land and within flood hazard areas, sorted by teigid ascending.",
-        "B37": "Find 10 buildings in Bergen municipality that are located in storm-surge areas, sorted by bygningid ascending, and report both municipality and county.",
-        #"B38": "List the five municipalities in Vestland county with the highest number of buildings in flood hazard areas, sorted by count descending.",                                               
-        "B39": "Provide a municipality-level overview of buildings located in quick-clay hazard areas in Trøndelag county.",
-        #"B40": "Provide a municipality-level summary of parcels in Agder county that are located in agricultural land and also overlap flood hazard areas.",
-
-        # Level 5: advanced overlay logic, grid/clipping/dissolve work, and multi-hazard summaries
-        "B41": "Provide a municipality-level comparison of buildings exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas in Agder county.",
-        "B42": "Find 10 buildings in Drammen municipality that are within the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
-        "B43": "Find 10 parcels in Stavanger municipality that are located on agricultural land and overlap flood hazard areas but not soil- and flood-landslide hazard areas, sorted by teigid ascending.",
-        #"B44": "Provide a municipality-level summary of parcels intersecting dissolved storm-surge areas in Nordland county.",
-        "B45": "Provide a 1000 m grid-based summary of buildings exposed to flood hazard areas in Oslo municipality, using a common CRS for all layers, and highlight the grid cells with the highest counts.",
-        "B46": "Classify municipalities in Vestland county based on the number of buildings exposed to flood hazard areas, quick-clay hazard areas, and storm-surge areas.",
-        "B47": "Find 10 buildings in Trondheim municipality that are exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas at the same time, sorted by bygningid ascending.",
-        #"B48": "Find 10 buildings in Bergen municipality that are contained in both storm-surge areas and the 200-year flood zone, sorted by bygningid ascending.",
-        "B49": "Summarize buildings in Innlandet county that are located in forest areas and in flood hazard areas clipped to the county boundary.",
-        "B50": "Summarize which municipalities in Rogaland county have the greatest concentration of parcels exposed to both flood hazard areas and storm-surge areas.",
-    }
-
+    "B33": "Find 10 buildings in Bergen municipality that are located in storm-surge areas, sorted by bygningid ascending, and report both municipality and county.",
+    "B34": "List the five municipalities in Vestland county with the highest number of buildings in flood hazard areas, sorted by count descending.",
+    "B35": "Provide a municipality-level overview of buildings located in quick-clay hazard areas in Trøndelag county.",
+    "B36": "Provide a municipality-level comparison of buildings exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas in Agder county.",
+    "B37": "Find 10 buildings in Trondheim municipality that are exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas at the same time, sorted by bygningid ascending.",
+    "B38": "Find 10 buildings in Bergen municipality that are contained in both storm-surge areas and the 200-year flood zone, sorted by bygningid ascending.",
+    "B39": "Find 10 buildings in Innlandet county that are located both in forest areas and in flood hazard areas, sorted by bygningid ascending.",
+    "B40": "List the 5 municipalities in Rogaland county with the highest number of parcels exposed to both flood hazard areas and storm-surge areas, sorted by parcel count descending.",
+}
     
     model_ids = ["gpt-5-mini"]
 

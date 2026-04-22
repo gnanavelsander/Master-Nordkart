@@ -251,8 +251,18 @@ def _collect_step_stats(run_logs: list | None) -> tuple[dict, dict, dict]:
     return step_registry, sql_repairs_by_step, step_retries_by_step
 
 
+def _last_run(run_logs: list | None) -> list:
+    """Return only the last run entry as a single-element list.
+
+    Step outcomes, validity, and issue summaries must reflect the active plan
+    only — not a merge of all historical attempts.
+    """
+    runs = run_logs or []
+    return [runs[-1]] if runs else []
+
+
 def _build_step_outcomes(run_logs: list | None) -> list[dict]:
-    step_registry, _, _ = _collect_step_stats(run_logs)
+    step_registry, _, _ = _collect_step_stats(_last_run(run_logs))
     outcomes: list[dict] = []
 
     for step_no, meta in _sorted_step_entries(step_registry):

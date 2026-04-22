@@ -407,9 +407,6 @@ def _route_after_model(state: AgentState) -> str:
             return "model"
         return "finalize"
 
-    if state["iterations"] >= state["max_iterations"]:
-        return "finalize"
-
     return "tools"
 
 

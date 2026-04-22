@@ -17,6 +17,7 @@ from agent_helpers import (
     _dedup,
     _empty_token_dict,
     _executed_from_steps,
+    _last_run,
     _step_execution_map,
     _format_step_execution,
     _parse_tool_result,
@@ -83,12 +84,20 @@ def _extract_plan_info(run_logs: list | None, fallback: dict | None = None) -> d
     plan = dict(fallback or {})
     logs = run_logs or []
     if logs:
-        latest = logs[-1] or {}
-        if "plan_finalized" in latest:
+        # Prefer the last run that has a finalized plan so that a failed replan
+        # (plan_finalized=False on the final run) does not wipe out the plan info.
+        source = None
+        for run in reversed(logs):
+            if run and run.get("plan_finalized"):
+                source = run
+                break
+        if source is None:
+            source = logs[-1] or {}
+        if "plan_finalized" in source:
             plan = {
-                "plan_finalized": latest.get("plan_finalized", False),
-                "planned_steps": latest.get("planned_steps", {}),
-                "required_step_ids": latest.get("required_step_ids", []),
+                "plan_finalized": source.get("plan_finalized", False),
+                "planned_steps": source.get("planned_steps", {}),
+                "required_step_ids": source.get("required_step_ids", []),
             }
 
     return {
@@ -121,10 +130,11 @@ def _failed_step_summary(run_logs: list | None) -> dict | None:
 
 
 def _step_issue_summaries(run_logs: list | None) -> tuple[list[dict], list[dict]]:
-    step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(run_logs)
+    last = _last_run(run_logs)
+    step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(last)
     issues_by_step: dict = {}
 
-    for run in (run_logs or []):
+    for run in last:
         for entry in (run.get("iterations", []) or []):
             failed_step = entry.get("failed_step")
             iteration_error = entry.get("iteration_error")
@@ -190,9 +200,14 @@ def _format_error_summary(run_logs: list | None) -> str:
     return f"{total} error{'s' if total != 1 else ''} ({', '.join(parts)})"
 
 
-def _combine_active_errors(step_issues: list[dict], all_errors: list[str] | None) -> list[str]:
+def _combine_active_errors(
+    step_issues: list[dict],
+    all_errors: list[str] | None,
+    recovered_issues: list[dict] | None = None,
+) -> list[str]:
+    recovered_errors = {i.get("error") for i in (recovered_issues or []) if i.get("error")}
     step_errors = [issue.get("error") for issue in step_issues if issue.get("error")]
-    other_errors = [err for err in (all_errors or []) if err]
+    other_errors = [err for err in (all_errors or []) if err and err not in recovered_errors]
     return _dedup(step_errors + other_errors)
 
 def _step_status_errors(run_logs: list | None) -> list[str]:
@@ -269,16 +284,28 @@ def _build_terminal_context(run_logs: list | None, all_errors: list[str] | None)
 
 
 def _active_errors_for_result(result: PipelineResult) -> list[str]:
-    active_step_issues, _ = _step_issue_summaries(result.run_logs)
+    active_step_issues, recovered_step_issues = _step_issue_summaries(result.run_logs)
     status_errors = _step_status_errors(result.run_logs)
+    active_step_errors = [
+        issue.get("error") for issue in active_step_issues if issue.get("error")
+    ]
+
+    # Completed runs should only surface still-active step/status issues.
+    # Historical transient errors can remain in all_errors even after recovery,
+    # especially for tool-shape failures that never map to a concrete step.
+    if result.task_completed:
+        return _dedup(active_step_errors + status_errors)
+
     active_errors = _dedup(
-        _combine_active_errors(active_step_issues, result.all_errors) + status_errors
+        _combine_active_errors(
+            active_step_issues,
+            result.all_errors,
+            recovered_step_issues,
+        ) + status_errors
     )
     if active_errors:
         return active_errors
-    if not result.task_completed:
-        return _dedup(result.all_errors)
-    return []
+    return _dedup(result.all_errors)
 
 
 def _summary_metrics(run_logs: list | None, trace: AgentTrace | None = None) -> dict:
@@ -917,7 +944,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                 planned_steps=plan["planned_steps"],
             )
             active_errors = _dedup(
-                _combine_active_errors(active_step_issues, snap.get("all_errors", []))
+                _combine_active_errors(active_step_issues, snap.get("all_errors", []), recovered_step_issues)
                 + _step_status_errors(snap.get("run_logs", []))
             )
             terminal_context = _build_terminal_context(
