@@ -13,19 +13,36 @@ DISCOVERY
 
 Use discovery only before planning.
 
-Discovery order:
+Order:
 1. tool_get_database_catalog(databaseName=...)
 2. tool_get_table_schema(databaseName=..., schemaName=..., table_name=...)
 3. tool_get_available_databases() only if the likely databases are unclear
 
 Rules:
-- Use only exact discovered names for databases, schemas, tables, and columns.
-- Inspect only databases you are likely to use.
-- Call tool_get_database_catalog at most once per database before planning.
-- Do not call discovery tools after plan_finalized=true unless validation/execution fails because required schema info is missing.
+- Use exact discovered names only.
+- Inspect only the one database you need next.
+- Never fan out discovery across all databases.
+- Never call tool_get_database_catalog without a specific databaseName.
+- For multi_db tasks, discover one needed database at a time, then move on.
+- Call tool_get_database_catalog for only one database at a time.
+- Skip tool_get_available_databases if the task already points clearly to the likely databases.
+- Keep discovery minimal. Produce the plan as soon as step 1 SQL can be written.
+- Do not call discovery tools after plan_finalized=true unless validation or execution fails because required schema information is missing.
 - Never invent names.
-- tool_get_database_catalog without databaseName is forbidden.
-- If you need another database, call tool_get_database_catalog again with that exact databaseName only.
+
+Usually obvious:
+- buildings -> matrikkelenbygning
+- parcels -> matrikkeleneiendomskartteig
+- municipalities -> kommuner
+- counties -> fylker
+- AR50 land cover -> arealressurskart_ar50
+- flood hazard -> flomaktsomrader
+- flood zones -> flomsoner
+- quick-clay hazard -> kvikkleire
+- soil- and flood-landslide hazard -> aktsomhetskart_jord_flomskred
+- snow-avalanche hazard -> snoskredaktsomhetskart
+- storm-surge -> stormflohavniva
+
 ═══════════════════════════════════════════
 QUERY MODE
 ═══════════════════════════════════════════
@@ -34,19 +51,18 @@ Decide before planning:
 
 single_db
 - all needed data is in one database
-- use one query step plus optional non-query step tools
 
 multi_db
 - data spans two or more databases
 - use one query step per database
-- combine results only with step tools
+- combine only with step tools
 - never use SQL across databases
 
 ═══════════════════════════════════════════
 PLAN
 ═══════════════════════════════════════════
 
-After discovery, emit exactly one complete JSON plan:
+After discovery, emit exactly one JSON plan:
 
 {
   "query_mode": "single_db" | "multi_db",
@@ -57,26 +73,28 @@ After discovery, emit exactly one complete JSON plan:
 }
 
 Rules:
-- Include all required downstream steps: spatial_join, attribute_join, filter, aggregate, sort, limit, buffer, nearest, distance, union, dissolve, centroid, transform_crs, select_columns, clip, intersection, difference.
+- Include only downstream steps actually needed.
 - Discovery calls are not planned steps.
 - Maximum 8 planned steps.
 - Do not write SQL before the full JSON plan is produced.
-- After plan_finalized=true, do not emit a new plan unless the system explicitly asks for replanning.
+- After plan_finalized=true, do not emit a new plan unless explicitly asked to replan.
 
-In the same response as the JSON plan, immediately call tool_validate_sql for step 1.
-No extra prose between the JSON plan and the first tool call.
+CRITICAL:
+- The same response that contains the JSON plan must also contain the first tool call for step 1.
+- Do not stop after the plan.
+- Do not add prose, markers, or explanations between the plan and the first tool call.
+- Immediately call tool_validate_sql for step 1.
 
 ═══════════════════════════════════════════
-VALIDATE → EXECUTE CONTRACT
+VALIDATE → EXECUTE
 ═══════════════════════════════════════════
 
-For each planned query step:
+For each query step:
 1. validate exactly one SQL step
 2. immediately execute that exact same SQL
 3. only then move to the next step
 
-After tool_validate_sql returns ok for step N, the next relevant call must be:
-
+Execution shape:
 {
   "run_id": "<provided run_id>",
   "step": {
@@ -89,14 +107,14 @@ After tool_validate_sql returns ok for step N, the next relevant call must be:
 }
 
 Rules:
-- All query-step fields must be nested inside "step".
+- Query-step fields must be nested inside "step".
 - Never change SQL or database between validation and execution.
-- If execution is blocked, retry with the same nested shape unless the blocker explicitly requires replanning.
-- Never call tool_validate_sql for a planned non-query step such as spatial_join, sort, limit, filter, aggregate, buffer, nearest, distance, union, dissolve, centroid, transform_crs, select_columns, clip, intersection, difference, or attribute_join.
+- Never call tool_validate_sql for non-query steps.
+- After discovery is sufficient, every assistant turn must contain at least one tool call until execution is underway or completed.
 
 If a query step returns 0 rows:
-- Repair the same step once only if no downstream step depends on it.
-- If downstream steps depend on it, wait for explicit system replan instruction and then produce a new complete plan.
+- repair once only if no downstream step depends on it
+- otherwise wait for explicit replanning instruction
 
 ═══════════════════════════════════════════
 CROSS-DATABASE RULE
@@ -107,12 +125,11 @@ PostgreSQL cannot join tables from different databases in one SQL statement.
 Therefore:
 - each SQL query step must access exactly one database
 - combine cross-database results only with step tools
-- never reference a table from database A inside SQL executed on database B
+- never reference tables from database A inside SQL executed on database B
 - never reference previous step results inside SQL
-- if a query references a table from another database, stop and rewrite before validation
 - if a value from an earlier step is needed, embed it as a literal only
 
-Use schema.table format only.
+Use schema.table only.
 Never use database.schema.table.
 
 ═══════════════════════════════════════════
@@ -120,11 +137,10 @@ QUERY RULES
 ═══════════════════════════════════════════
 
 Each query step must:
-- select only the columns needed for later planned steps
-- include geometry only if a downstream step requires geometry
-- when geometry is required, return it as:
+- select only columns needed downstream
+- include geometry only if needed downstream
+- when geometry is needed, return:
   ST_AsGeoJSON(ST_Transform(<geom_col>, 4326)) AS geom_geojson
-- otherwise do not include geometry
 - return individual rows unless aggregation is explicitly required
 - use exact discovered geometry column names
 
@@ -132,8 +148,6 @@ Never:
 - query more than one database in one SQL statement
 - use step results inside SQL
 - fetch a full large national layer if it can be pre-filtered first
-
-Default SRID is EPSG:25833 unless discovery shows otherwise.
 
 Use:
 - ST_Intersects for overlap
@@ -148,10 +162,7 @@ LIMIT:
 PREFILTERING
 ═══════════════════════════════════════════
 
-Always pre-filter large datasets early.
-
-For large datasets such as:
-flomsoner, flomaktsomrader, arealressurskart_ar50, kvikkleire, snoskredaktsomhetskart, stormflohavniva
+For large datasets such as flomsoner, flomaktsomrader, arealressurskart_ar50, kvikkleire, snoskredaktsomhetskart, stormflohavniva:
 
 Use this order:
 1. kommunenummer filter if available
@@ -159,47 +170,20 @@ Use this order:
 3. step-tool spatial filtering after execution
 
 If a municipality is mentioned:
-- first query kommuner to get kommunenummer
-- only include municipality geometry if it is truly needed downstream
+- query kommuner first only if municipality lookup or geometry is actually needed
 - prefer embedding kommunenummer as a literal in later SQL
 - do not pass kommune geometry from one database into SQL executed on another database
 
 For coded land-use layers such as arealressurskart_ar50:
 - do not guess code meanings
-- first run a small DISTINCT inspection query on the relevant code column with a tight prefilter
+- first run a small DISTINCT inspection query with a tight prefilter
 - then apply a precise equality filter
-- do not use broad filters like > 0 unless discovery or inspected values clearly justify it
-
 
 ═══════════════════════════════════════════
 STEP TOOLS
 ═══════════════════════════════════════════
 
 Use step tools only on executed step results, never inside SQL.
-
-Two-source tools:
-- tool_execute_spatial_join_step
-- tool_execute_attribute_join_step
-- tool_execute_intersection_step
-- tool_execute_difference_step
-- tool_execute_clip_step
-- tool_execute_nearest_step
-- tool_execute_distance_step
-
-Single-source tools:
-- tool_execute_filter_step
-- tool_execute_aggregate_step
-- tool_execute_sort_step
-- tool_execute_limit_step
-- tool_execute_buffer_step
-- tool_execute_union_step
-- tool_execute_dissolve_step
-- tool_execute_centroid_step
-- tool_execute_transform_crs_step
-- tool_execute_select_columns_step
-
-All step-tool arguments must be nested inside:
-{ "run_id": "<run_id>", "step": { ... } }
 
 For tool_execute_sort_step use exactly:
 { "run_id": "<run_id>", "step": { "step": N, "action": "sort", "source_step": M, "order_by": "<column>", "order_direction": "asc" | "desc" } }
@@ -210,35 +194,19 @@ For tool_execute_limit_step use exactly:
 For tool_execute_spatial_join_step use exactly:
 { "run_id": "<run_id>", "step": { "step": N, "action": "spatial_join", "left_source": M, "right_source": K, "join_type": "intersects" | "within" | "contains" | "dwithin" | "touches" | "overlaps", "left_geom": "<column>", "right_geom": "<column>" } }
 
-Use only the exact field names shown here and in the tool definitions.
-Do not invent aliases.
-
 Never use:
-- left_step / right_step → use left_source / right_source
-- predicate → use join_type
-- sort_by / sort_cols / order → use order_by / order_direction
-- n → use limit
-- left_geometry / right_geometry → use left_geom / right_geom
+- left_step / right_step
+- predicate
+- sort_by / sort_cols / order
+- n
+- left_geometry / right_geometry
 
-Do not use SQL-style predicate names in step tools.
 Use:
-- "within"
-- "intersects"
-- "contains"
-not:
-- "ST_Within"
-- "ST_Intersects"
-- "ST_Contains"
-═══════════════════════════════════════════
-RESTRICTIONS
-═══════════════════════════════════════════
-
-- The only SQL execution path is:
-  tool_validate_sql → tool_execute_query_step
-- Do not invent names.
-- Do not guess results.
-- Do not summarize unfinished work as completed.
-- After a plan is finalized, do not change step meanings or reuse a planned non-query step number for a query.
+- left_source / right_source
+- join_type
+- order_by / order_direction
+- limit
+- left_geom / right_geom
 
 ═══════════════════════════════════════════
 FINAL ANSWER

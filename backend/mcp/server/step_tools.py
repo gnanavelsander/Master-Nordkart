@@ -49,9 +49,11 @@ def _normalize_step(step: dict, infer_action: str | None = None) -> dict:
         step["order_by"] = parts[0]
         step["order_direction"] = parts[1].lower() if len(parts) > 1 else "asc"
 
-    # aggregates alias
+    # aggregate aliases
     if "aggregates" in step and "aggregate" not in step:
         step["aggregate"] = step.pop("aggregates")
+    if "aggregations" in step and "aggregate" not in step:
+        step["aggregate"] = step.pop("aggregations")
 
     # Inside aggregate list: function→operation, alias→name
     agg_list = step.get("aggregate")
@@ -60,12 +62,35 @@ def _normalize_step(step: dict, infer_action: str | None = None) -> dict:
         for item in agg_list:
             if isinstance(item, dict):
                 item = dict(item)
+                if "op" in item and "operation" not in item:
+                    item["operation"] = item.pop("op")
                 if "function" in item and "operation" not in item:
                     item["operation"] = item.pop("function")
+                if item.get("operation") == "count_distinct":
+                    item["operation"] = "count"
+                    item["distinct"] = True
+                if "as" in item and "name" not in item:
+                    item["name"] = item.pop("as")
                 if "alias" in item and "name" not in item:
                     item["name"] = item.pop("alias")
             normalized.append(item)
         step["aggregate"] = normalized
+        if normalized and isinstance(normalized[0], dict) and "metric_as" not in step:
+            first_name = normalized[0].get("name")
+            if first_name:
+                step["metric_as"] = first_name
+
+    if "column" in step and "metric_column" not in step:
+        step["metric_column"] = step["column"]
+
+    if step.get("aggregation_type") == "count_distinct":
+        step["aggregation_type"] = "count"
+        step["metric_distinct"] = True
+
+    # Some models send explicit null for optional list-like fields.
+    # Treat null group_by as "no grouping" so aggregate(count) can still run.
+    if step.get("group_by") is None:
+        step["group_by"] = []
 
     # sort key alias: sort=[{"column": ..., "order"/"direction": ...}]
     if "order_by" not in step and "sort" in step:
@@ -489,22 +514,32 @@ async def execute_aggregate_step(ctx: Context[ServerSession, AppContext], run_id
 
         # Read aggregate spec from normalized list or PlanStep fields
         agg_list = norm.get("aggregate")
+        distinct_metric = bool(norm.get("metric_distinct", False))
         if agg_list and isinstance(agg_list, list) and isinstance(agg_list[0], dict):
             first = agg_list[0]
             agg_type = s.aggregation_type or first.get("operation") or "count"
             metric_col = s.metric_column or first.get("column")
+            metric_as = s.metric_as or first.get("name") or "metric"
+            distinct_metric = distinct_metric or bool(first.get("distinct", False))
         else:
             agg_type = s.aggregation_type or "count"
             metric_col = s.metric_column
-        metric_as = s.metric_as or "metric"
+            metric_as = s.metric_as or "metric"
         order_by = s.order_by
         order_direction = s.order_direction or "asc"
 
         if df.empty:
             out = pd.DataFrame()
         elif agg_type == "count":
-            out = (df.groupby(s.group_by).size().reset_index(name=metric_as)
-                   if s.group_by else pd.DataFrame([{metric_as: len(df)}]))
+            if distinct_metric and metric_col:
+                out = (
+                    df.groupby(s.group_by)[metric_col].nunique().reset_index(name=metric_as)
+                    if s.group_by
+                    else pd.DataFrame([{metric_as: int(df[metric_col].nunique())}])
+                )
+            else:
+                out = (df.groupby(s.group_by).size().reset_index(name=metric_as)
+                       if s.group_by else pd.DataFrame([{metric_as: len(df)}]))
         else:
             out = (df.groupby(s.group_by)[metric_col].agg(agg_type).reset_index(name=metric_as)
                    if s.group_by
@@ -519,7 +554,8 @@ async def execute_aggregate_step(ctx: Context[ServerSession, AppContext], run_id
         _save_rows(ctx, run_id, s.step, rows,
                    step_meta={"action": "aggregate", "aggregation_type": agg_type,
                                "group_by": s.group_by, "metric_column": s.metric_column,
-                               "metric_as": metric_as, "source_step": s.source_step})
+                               "metric_as": metric_as, "source_step": s.source_step,
+                               "metric_distinct": distinct_metric})
         return _ok(run_id, s.step, "aggregate", rows)
     except Exception as e:
         return _err(step_no, "aggregate", str(e))

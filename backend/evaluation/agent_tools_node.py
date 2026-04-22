@@ -188,10 +188,103 @@ def _lock_step(state: "AgentState", step_number: int | None) -> None:
 
 
 
-def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
-    step_number = args.get("step_number")
+def _planned_step_meta(state: "AgentState", step_number: int | None) -> dict:
     if step_number is None:
+        return {}
+
+    planned_steps = state.get("planned_steps", {}) or {}
+    planned = planned_steps.get(step_number)
+    if planned is None:
+        planned = planned_steps.get(str(step_number))
+    return dict(planned) if isinstance(planned, dict) else {}
+
+
+def _planned_query_database(planned_step: dict) -> str:
+    return (planned_step.get("database") or "").strip() if isinstance(planned_step, dict) else ""
+
+
+def _plan_mismatch_replan_payload(
+    state: "AgentState",
+    step_number: int | None,
+    attempted_action: str,
+    attempted_database: str = "",
+) -> dict | None:
+    if (
+        not state.get("plan_finalized")
+        or step_number is None
+        or state.get("replan_trigger") is not None
+    ):
         return None
+
+    planned_step = _planned_step_meta(state, step_number)
+    if not planned_step:
+        return {
+            "reason": "blocked_step",
+            "error": (
+                f"Step {step_number} is not part of the finalized plan. "
+                "Produce a new numbered plan before continuing."
+            ),
+            "zero_rows_step": None,
+        }
+
+    planned_action = (planned_step.get("action") or "").strip()
+    if planned_action and planned_action != attempted_action:
+        return {
+            "reason": "blocked_step",
+            "error": (
+                f"Step {step_number} is planned as '{planned_action}', "
+                f"but was attempted as '{attempted_action}'. "
+                "Produce a new plan or execute the planned action."
+            ),
+            "zero_rows_step": None,
+        }
+
+    planned_database = _planned_query_database(planned_step)
+    if (
+        planned_action == "query"
+        and planned_database
+        and attempted_database
+        and planned_database != attempted_database
+    ):
+        return {
+            "reason": "blocked_step",
+            "error": (
+                f"Step {step_number} is planned to query database '{planned_database}', "
+                f"but was attempted against '{attempted_database}'. "
+                "Produce a new plan or keep this step on the planned database."
+            ),
+            "zero_rows_step": None,
+        }
+
+    return None
+
+
+def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
+    sql = (args.get("sql") or "").strip()
+    attempted_database = (args.get("databaseName") or "").strip()
+    step_number = args.get("step_number")
+    if step_number is None or not sql or not attempted_database:
+        counts = dict(state.get("tool_shape_error_counts", {}))
+        counts["tool_validate_sql"] = counts.get("tool_validate_sql", 0) + 1
+        state["tool_shape_error_counts"] = counts
+        missing = []
+        if not sql:
+            missing.append("sql")
+        if not attempted_database:
+            missing.append("databaseName")
+        if step_number is None:
+            missing.append("step_number")
+        missing_str = ", ".join(missing)
+        return _block_step_result(
+            "tool_validate_sql",
+            (
+                f"tool_validate_sql requires {missing_str}. "
+                "Correct shape: tool_validate_sql(sql='SELECT ...', "
+                "databaseName='kommuner', step_number=1)"
+            ),
+            step_number,
+            "query",
+        )
 
     required_step_ids = {
         str(step_id) for step_id in set(state.get("required_step_ids", set()))
@@ -246,13 +339,27 @@ def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
             "query",
         )
 
-    planned_action = (planned_steps.get(str(step_number)) or planned_steps.get(step_number) or {}).get("action")
+    planned_step = _planned_step_meta(state, step_number)
+    planned_action = planned_step.get("action")
     if planned_action and planned_action != "query":
         return _block_step_result(
             "tool_validate_sql",
             f"Step {step_number} is planned as '{planned_action}', not a SQL query. Do not validate SQL for this step.",
             step_number,
             planned_action,
+        )
+
+    planned_database = _planned_query_database(planned_step)
+    if planned_database and attempted_database and planned_database != attempted_database:
+        return _block_step_result(
+            "tool_validate_sql",
+            (
+                f"Step {step_number} is planned to query database '{planned_database}', "
+                f"not '{attempted_database}'. Use the planned database for this step or "
+                "produce a new plan with different step numbers."
+            ),
+            step_number,
+            "query",
         )
 
     step_registry = dict(state.get("step_registry", {}))
@@ -276,6 +383,18 @@ def _guard_validate_sql(state: "AgentState", args: dict) -> str | None:
             f"Step {step_number} is already registered as action '{prev_action}' and cannot be changed to 'query'.",
             step_number,
             prev_action,
+        )
+
+    prev_database = (prev.get("database") or "").strip()
+    if prev_action == "query" and prev_database and attempted_database and prev_database != attempted_database:
+        return _block_step_result(
+            "tool_validate_sql",
+            (
+                f"Step {step_number} is already registered for database '{prev_database}' "
+                f"and cannot be changed to '{attempted_database}'."
+            ),
+            step_number,
+            "query",
         )
 
     return None
@@ -325,11 +444,15 @@ def _guard_step_tool(
     blocked_reason: str | None = None
     prev = dict(state.get("step_registry", {}).get(step_number, {})) if step_number is not None else {}
     prev_action = prev.get("action")
+    prev_database = (prev.get("database") or "").strip()
 
     required_step_ids = {
         str(step_id) for step_id in set(state.get("required_step_ids", set()))
     }
     planned_steps = state.get("planned_steps", {})
+    planned_step = _planned_step_meta(state, step_number)
+    planned_action = (planned_step.get("action") or "").strip()
+    planned_database = _planned_query_database(planned_step)
 
     if name == "tool_execute_query_step":
         logger.info(
@@ -391,6 +514,11 @@ def _guard_step_tool(
         blocked_reason = (
             f"Step {step_number} is locked after a successful validation/execution and cannot be changed."
         )
+    elif planned_action and planned_action != action:
+        blocked_reason = (
+            f"Step {step_number} is planned as '{planned_action}', not '{action}'. "
+            "Execute the planned action for this step or produce a new plan."
+        )
     elif prev_action and prev_action != action:
         blocked_reason = (
             f"Step {step_number} is already registered as action '{prev_action}' "
@@ -414,6 +542,16 @@ def _guard_step_tool(
             blocked_reason = "step.database is required."
         elif not sql:
             blocked_reason = "step.sql is required."
+        elif planned_database and planned_database != database:
+            blocked_reason = (
+                f"Step {step_number} is planned to query database '{planned_database}', "
+                f"not '{database}'. Execute the planned query for this step or produce a new plan."
+            )
+        elif prev_action == "query" and prev_database and prev_database != database:
+            blocked_reason = (
+                f"Step {step_number} is already registered for database '{prev_database}' "
+                f"and cannot be changed to '{database}'."
+            )
         elif validated_entry is None:
             blocked_reason = (
                 f"No validated SQL found for step {step_number}. "
@@ -451,7 +589,11 @@ def _guard_step_tool(
                 state["missing_source_step_counts"] = counts
                 blocked_reason = "aggregate requires source_step."
             elif not step_obj.get("group_by") and not step_obj.get("aggregation_type"):
-                agg_list = step_obj.get("aggregate") or step_obj.get("aggregates")
+                agg_list = (
+                    step_obj.get("aggregate")
+                    or step_obj.get("aggregates")
+                    or step_obj.get("aggregations")
+                )
                 has_raw_sql = isinstance(agg_list, list) and any(
                     isinstance(a, dict) and "aggregate_sql" in a for a in agg_list
                 )
@@ -462,6 +604,8 @@ def _guard_step_tool(
                         "and optionally group_by=['column'] and metric_column='col'. "
                         "For complex spatial calculations, use tool_execute_query_step instead."
                     )
+                elif agg_list:
+                    blocked_reason = None
                 else:
                     blocked_reason = (
                         "aggregate requires group_by or aggregation_type. "
@@ -659,7 +803,9 @@ def _update_iteration_flags(
     exec_ok: bool,
     iter_flags: dict,
 ) -> None:
-    step_number = step_obj.get("step") if step_obj else None
+    step_number = step_obj.get("step") if isinstance(step_obj, dict) else None
+    if step_number is None and isinstance(parsed_result, dict):
+        step_number = parsed_result.get("step")
     run_id = state.get("run_id")
 
     if exec_ok:
@@ -688,7 +834,24 @@ def _update_iteration_flags(
             and str(parsed_result.get("reason") or "") == "execute_timeout"
         )
 
-        if not is_blocked:
+        if is_blocked:
+            attempted_action = None
+            if isinstance(step_obj, dict):
+                attempted_action = step_obj.get("action")
+            if not attempted_action and isinstance(parsed_result, dict):
+                attempted_action = parsed_result.get("action")
+            if not attempted_action:
+                attempted_action = name.replace("tool_execute_", "").replace("_step", "")
+            attempted_database = (step_obj.get("database") or "").strip() if isinstance(step_obj, dict) else ""
+            replan_payload = _plan_mismatch_replan_payload(
+                state,
+                step_number,
+                attempted_action=attempted_action,
+                attempted_database=attempted_database,
+            )
+            if replan_payload is not None:
+                state["replan_trigger"] = replan_payload
+        else:
             if name == "tool_execute_query_step":
                 _increment_sql_repair(state, step_number)
                 state["sql_repair_count"] = state.get("sql_repair_count", 0) + 1
@@ -770,17 +933,14 @@ def _handle_validate_sql_tool(
         state["all_errors"] = _dedup(
             list(state.get("all_errors", [])) + [json.dumps(parsed_result, ensure_ascii=False)]
         )
-        if (
-            state.get("plan_finalized")
-            and step_number is not None
-            and str(step_number) not in {str(k) for k in state.get("planned_steps", {}).keys()}
-            and state.get("replan_trigger") is None
-        ):
-            state["replan_trigger"] = {
-                "reason": "blocked_step",
-                "error": str(parsed_result.get("reason") or parsed_result.get("error") or ""),
-                "zero_rows_step": None,
-            }
+        replan_payload = _plan_mismatch_replan_payload(
+            state,
+            step_number,
+            attempted_action="query",
+            attempted_database=database,
+        )
+        if replan_payload is not None:
+            state["replan_trigger"] = replan_payload
         return
 
     if step_number is not None and not is_locked:
@@ -1068,6 +1228,11 @@ async def _tools_node(state: AgentState) -> AgentState:
         try:
             if name in STEP_TOOLS:
                 validated_sqls = state.get("validated_sqls", {})
+                attempted_step = (
+                    dict(args.get("step"))
+                    if isinstance(args.get("step"), dict)
+                    else None
+                )
                 blocked_json, step_obj = _guard_step_tool(state, name, raw_args, args, validated_sqls)
 
                 result_str, parsed_result, exec_ok, rows_returned = await _execute_tool(
@@ -1075,7 +1240,14 @@ async def _tools_node(state: AgentState) -> AgentState:
                 )
 
                 _update_step_registry(state, name, step_obj, exec_ok, rows_returned)
-                _update_iteration_flags(state, name, step_obj, parsed_result, exec_ok, iter_flags)
+                _update_iteration_flags(
+                    state,
+                    name,
+                    step_obj if step_obj is not None else attempted_step,
+                    parsed_result,
+                    exec_ok,
+                    iter_flags,
+                )
 
                 # Trigger replan if a step succeeds with 0 rows but required steps remain
                 # that depend on this step's data (i.e. non-query steps like spatial_join,

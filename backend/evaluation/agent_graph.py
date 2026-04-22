@@ -400,6 +400,8 @@ def _route_after_model(state: AgentState) -> str:
     ai = state["current_ai"]
 
     if not ai.tool_calls:
+        if not state.get("current_ai_is_final_answer", True):
+            return "model"
         # Send back to model if we injected a clarification-block message
         if not state.get("plan_finalized", False) and state.get("clarification_block_count", 0) <= 2:
             return "model"
@@ -559,13 +561,6 @@ def _route_after_tools(state: AgentState) -> str:
         if state.get("replan_count", 0) < max_replans:
             return "replan"
         return "finalize"  # replan budget exhausted
-
-    # exit early if replan budget exhausted and plan never finalized
-    if (
-        state.get("replan_count", 0) >= max_replans
-        and not state.get("plan_finalized", False)
-    ):
-        return "finalize"
 
     if state.get("iterations", 0) >= state.get("max_iterations", 0):
         return "finalize"
