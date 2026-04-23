@@ -11,13 +11,14 @@ sys.path.insert(0, str(ROOT))
 
 from agent_models import EvalRun, PipelineResult, AgentTrace, AgentRunError
 from agent_helpers import (
+    _active_plan_logs,
+    _active_plan_run,
     _fallback_answer_from_logs,
     _build_step_outcomes,
-    _collect_step_stats,
+    _collect_active_step_stats,
     _dedup,
     _empty_token_dict,
     _executed_from_steps,
-    _last_run,
     _step_execution_map,
     _format_step_execution,
     _parse_tool_result,
@@ -82,17 +83,8 @@ def _extract_retrieval_info(run_logs: list | None, fallback: dict | None = None)
 
 def _extract_plan_info(run_logs: list | None, fallback: dict | None = None) -> dict:
     plan = dict(fallback or {})
-    logs = run_logs or []
-    if logs:
-        # Prefer the last run that has a finalized plan so that a failed replan
-        # (plan_finalized=False on the final run) does not wipe out the plan info.
-        source = None
-        for run in reversed(logs):
-            if run and run.get("plan_finalized"):
-                source = run
-                break
-        if source is None:
-            source = logs[-1] or {}
+    source = _active_plan_run(run_logs)
+    if source:
         if "plan_finalized" in source:
             plan = {
                 "plan_finalized": source.get("plan_finalized", False),
@@ -130,11 +122,11 @@ def _failed_step_summary(run_logs: list | None) -> dict | None:
 
 
 def _step_issue_summaries(run_logs: list | None) -> tuple[list[dict], list[dict]]:
-    last = _last_run(run_logs)
-    step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(last)
+    active_logs = _active_plan_logs(run_logs)
+    step_registry, sql_repairs_by_step, step_retries_by_step = _collect_active_step_stats(run_logs)
     issues_by_step: dict = {}
 
-    for run in last:
+    for run in active_logs:
         for entry in (run.get("iterations", []) or []):
             failed_step = entry.get("failed_step")
             iteration_error = entry.get("iteration_error")
@@ -172,10 +164,11 @@ def _step_issue_summaries(run_logs: list | None) -> tuple[list[dict], list[dict]
 
 def _format_error_summary(run_logs: list | None) -> str:
     """Return compact error summary: '3 errors (step 1: 1, step 3: 2)' or '-'."""
-    step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(run_logs)
+    active_logs = _active_plan_logs(run_logs)
+    step_registry, _, _ = _collect_active_step_stats(run_logs)
     errors_by_step: dict[str, int] = {}
 
-    for run in (run_logs or []):
+    for run in active_logs:
         for entry in (run.get("iterations", []) or []):
             failed_step = entry.get("failed_step")
             if failed_step is not None and entry.get("iteration_error"):
@@ -310,7 +303,7 @@ def _active_errors_for_result(result: PipelineResult) -> list[str]:
 
 def _summary_metrics(run_logs: list | None, trace: AgentTrace | None = None) -> dict:
     run_logs = run_logs or []
-    step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(run_logs)
+    step_registry, sql_repairs_by_step, step_retries_by_step = _collect_active_step_stats(run_logs)
 
     total_step_errors = 0
     blocked_calls = 0
@@ -365,6 +358,8 @@ def _summary_metrics(run_logs: list | None, trace: AgentTrace | None = None) -> 
         ) if v > 0
     }
     step_retries_by_step_clean = {str(k): v for k, v in step_retries_by_step.items() if v > 0}
+    total_sql_repairs = sum((run.get("sql_repairs_used", 0) or 0) for run in run_logs)
+    total_step_retries = sum((run.get("step_retries_used", 0) or 0) for run in run_logs)
 
     if trace is not None and trace.databases_in_result:
         db_count_used = len(trace.databases_in_result)
@@ -404,11 +399,11 @@ def _summary_metrics(run_logs: list | None, trace: AgentTrace | None = None) -> 
     return {
         "guard_stats": {
             "sql_repairs": {
-                "total": sum(sql_repairs_by_step_clean.values()),
+                "total": total_sql_repairs,
                 "by_step": sql_repairs_by_step_clean,
             },
             "step_retries": {
-                "total": sum(step_retries_by_step_clean.values()),
+                "total": total_step_retries,
                 "by_step": step_retries_by_step_clean,
             },
             "replans": replan_count,
@@ -436,7 +431,7 @@ def _extract_agent_trace_from_run_logs(
     total_tool_calls = 0
     tool_call_counts: dict[str, int] = {}
     executions: list[dict] = []
-    merged_step_registry: dict = {}
+    active_step_registry, _, _ = _collect_active_step_stats(run_logs)
     step_to_iteration: dict[str, int | None] = {}
 
     if not run_logs:
@@ -461,9 +456,6 @@ def _extract_agent_trace_from_run_logs(
             if tbl not in tables:
                 tables.append(tbl)
 
-        for step_no, meta in (run.get("step_registry") or {}).items():
-            merged_step_registry[step_no] = meta
-
         for entry in (run.get("iterations") or []):
             iter_no = entry.get("iteration")
             for t in entry.get("tools", []):
@@ -471,11 +463,14 @@ def _extract_agent_trace_from_run_logs(
                 tool_name = t.get("tool")
                 if tool_name:
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
+    for run in _active_plan_logs(run_logs):
+        for entry in (run.get("iterations") or []):
+            iter_no = entry.get("iteration")
             for evt in (entry.get("step_events") or []):
                 if evt.get("event_type") == "execute" and evt.get("step") is not None:
                     step_to_iteration[str(evt.get("step"))] = iter_no
 
-    for step_no, meta in _sorted_step_items(merged_step_registry):
+    for step_no, meta in _sorted_step_items(active_step_registry):
         executions.append(
             {
                 "iteration": step_to_iteration.get(str(step_no)),
@@ -499,14 +494,14 @@ def _extract_agent_trace_from_run_logs(
     )
 
     query_steps_trace = [
-        s for s in merged_step_registry.values()
+        s for s in active_step_registry.values()
         if s.get("action") == "query"
     ]
 
     if query_steps_trace:
         validated = all(s.get("validated", False) for s in query_steps_trace)
         executed_successfully = all(
-            s.get("executed", False) for s in merged_step_registry.values()
+            s.get("executed", False) for s in active_step_registry.values()
         )
     else:
         validated = valid_sql
@@ -657,7 +652,7 @@ def _print_details(results: list):
         if retrieval:
             logger.info("  retrieval_score    : %s  scoped=%s", retrieval.get("top_score"), retrieval.get("scope_active"))
 
-        step_registry, sql_repairs_by_step, step_retries_by_step = _collect_step_stats(r.run_logs)
+        step_registry, sql_repairs_by_step, step_retries_by_step = _collect_active_step_stats(r.run_logs)
         failed_summary = _failed_step_summary(r.run_logs)
         active_step_issues, recovered_step_issues = _step_issue_summaries(r.run_logs)
 

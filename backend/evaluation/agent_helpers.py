@@ -251,18 +251,41 @@ def _collect_step_stats(run_logs: list | None) -> tuple[dict, dict, dict]:
     return step_registry, sql_repairs_by_step, step_retries_by_step
 
 
-def _last_run(run_logs: list | None) -> list:
-    """Return only the last run entry as a single-element list.
+def _active_plan_run(run_logs: list | None) -> dict | None:
+    """Return the run entry that represents the active plan.
 
-    Step outcomes, validity, and issue summaries must reflect the active plan
-    only — not a merge of all historical attempts.
+    After replans, step registries are renumbered from 1 again. Any step-based
+    reporting must therefore read from the active plan only, not from a merge of
+    historical runs.
     """
+    runs = [run for run in (run_logs or []) if isinstance(run, dict)]
+    if not runs:
+        return None
+
+    for run in reversed(runs):
+        if run.get("plan_finalized"):
+            return run
+
+    return runs[-1]
+
+
+def _active_plan_logs(run_logs: list | None) -> list[dict]:
+    run = _active_plan_run(run_logs)
+    return [run] if run else []
+
+
+def _collect_active_step_stats(run_logs: list | None) -> tuple[dict, dict, dict]:
+    return _collect_step_stats(_active_plan_logs(run_logs))
+
+
+def _last_run(run_logs: list | None) -> list:
+    """Return only the last run entry as a single-element list."""
     runs = run_logs or []
     return [runs[-1]] if runs else []
 
 
 def _build_step_outcomes(run_logs: list | None) -> list[dict]:
-    step_registry, _, _ = _collect_step_stats(_last_run(run_logs))
+    step_registry, _, _ = _collect_active_step_stats(run_logs)
     outcomes: list[dict] = []
 
     for step_no, meta in _sorted_step_entries(step_registry):
