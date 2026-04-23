@@ -1,23 +1,12 @@
-import asyncio
 import hashlib
 import json
 import logging
-import os
 import re
 from typing import Any
 
 from langchain_core.messages import ToolMessage
 
 logger = logging.getLogger(__name__)
-
-# Hard timeout per step execute call (seconds). Queries that exceed this are returned
-# as a blocked error so the model can rewrite and retry with reduced data.
-EXECUTE_TIMEOUT_S = int(os.getenv("EXECUTE_TIMEOUT_S", "300"))
-
-
-
-
-
 
 from agent_models import AgentState
 from backend.evaluation.prompts.agent_helpers import (
@@ -686,28 +675,7 @@ async def _execute_tool(
     step_number = step_obj.get("step") if isinstance(step_obj, dict) else None
     logger.info("      [execute] STARTING %s step=%s", name, step_number)
 
-    try:
-        result_str = await asyncio.wait_for(tool.ainvoke(args), timeout=EXECUTE_TIMEOUT_S)
-    except asyncio.TimeoutError:
-        logger.warning(
-            "      [execute] TIMEOUT %s step=%s — exceeded %ss",
-            name, step_number, EXECUTE_TIMEOUT_S,
-        )
-        timeout_result = json.dumps({
-            "executed": False,
-            "error": (
-                f"{name} timed out after {EXECUTE_TIMEOUT_S}s. "
-                "The query is too expensive to run as-is. "
-                "Rewrite with a spatial filter (ST_Intersects, kommunenummer=..., bounding box) "
-                "to reduce the data before executing."
-            ),
-            "reason": "execute_timeout",
-            "step": step_number,
-            "action": step_obj.get("action", "query") if isinstance(step_obj, dict) else "query",
-        })
-        parsed = _parse_tool_result(timeout_result)
-        return timeout_result, parsed, False, 0
-
+    result_str = await tool.ainvoke(args)
     parsed = _parse_tool_result(result_str)
     exec_ok = isinstance(parsed, dict) and parsed.get("executed", False)
     rows_returned = parsed.get("rows_returned", 0) if isinstance(parsed, dict) else 0
@@ -829,11 +797,6 @@ def _update_iteration_flags(
         is_blocked = isinstance(parsed_result, dict) and str(
             parsed_result.get("error", "")
         ).endswith("blocked.")
-        is_execute_timeout = (
-            isinstance(parsed_result, dict)
-            and str(parsed_result.get("reason") or "") == "execute_timeout"
-        )
-
         if is_blocked:
             attempted_action = None
             if isinstance(step_obj, dict):
@@ -864,19 +827,6 @@ def _update_iteration_flags(
         state["all_errors"] = _dedup(
             list(state.get("all_errors", [])) + [json.dumps(parsed_result, ensure_ascii=False)]
         )
-
-        # Timeout means the approach must change — trigger replan
-        if (
-            is_execute_timeout
-            and state.get("plan_finalized")
-            and state.get("replan_trigger") is None
-        ):
-            state["replan_trigger"] = {
-                "reason": "timeout_step",
-                "error": str(parsed_result.get("error") or ""),
-                "zero_rows_step": None,
-            }
-            logger.info("      [replan] Step %s timed out — flagging for replan", step_number)
 
     if exec_ok:
         state["last_executed_result"] = parsed_result

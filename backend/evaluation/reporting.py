@@ -65,6 +65,27 @@ def _extract_result_contract_info(result_data: dict | None) -> dict:
     }
 
 
+def _last_executed_result_from_run_logs(run_logs: list | None) -> dict | None:
+    latest: dict | None = None
+
+    for run in run_logs or []:
+        for entry in run.get("iterations", []) or []:
+            for tool in entry.get("tools", []) or []:
+                parsed = _parse_tool_result(tool.get("result"))
+                if isinstance(parsed, dict) and parsed.get("executed", False):
+                    latest = parsed
+
+    return latest
+
+
+def _last_final_sql_from_run_logs(run_logs: list | None) -> str | None:
+    for run in reversed(run_logs or []):
+        sql = (run.get("final_sql") or "").strip()
+        if sql:
+            return sql
+    return None
+
+
 def _extract_retrieval_info(run_logs: list | None, fallback: dict | None = None) -> dict:
     retrieval = dict(fallback or {})
     logs = run_logs or []
@@ -901,13 +922,14 @@ async def store_run(run: EvalRun, results: list) -> str:
     for r in results:
         if isinstance(r, AgentRunError):
             snap = r.snapshot or {}
+            run_logs = snap.get("run_logs", [])
             tokens = snap.get("tokens", _empty_token_dict())
             retrieval = _extract_retrieval_info(
-                snap.get("run_logs", []),
+                run_logs,
                 fallback=snap.get("retrieval"),
             )
             plan = _extract_plan_info(
-                snap.get("run_logs", []),
+                run_logs,
                 fallback={
                     "plan_finalized": snap.get("plan_finalized", False),
                     "planned_steps": snap.get("planned_steps", {}),
@@ -915,39 +937,41 @@ async def store_run(run: EvalRun, results: list) -> str:
                 },
             )
             trace = _extract_agent_trace_from_run_logs(
-                snap.get("run_logs", []),
+                run_logs,
                 snap.get("valid_sql", False),
                 snap.get("executed", False),
             )
-            failed_summary = _failed_step_summary(snap.get("run_logs", []))
-            active_step_issues, recovered_step_issues = _step_issue_summaries(snap.get("run_logs", []))
-            step_outcomes = _build_step_outcomes(snap.get("run_logs", []))
+            failed_summary = _failed_step_summary(run_logs)
+            active_step_issues, recovered_step_issues = _step_issue_summaries(run_logs)
+            step_outcomes = _build_step_outcomes(run_logs)
             valid_sql = _valid_sql_from_steps(
-                snap.get("run_logs", []),
+                run_logs,
                 valid_sql_fallback=snap.get("valid_sql", trace.validated_before_exec),
             )
             executed = _executed_from_steps(
-                snap.get("run_logs", []),
+                run_logs,
                 executed_fallback=snap.get("executed", trace.executed_successfully),
             )
             task_completed = _task_completed_from_steps(
-                snap.get("run_logs", []),
+                run_logs,
                 task_completed_fallback=snap.get("task_completed", False),
-                final_answer=_fallback_answer_from_logs(snap.get("run_logs", [])),
+                final_answer=_fallback_answer_from_logs(run_logs),
                 required_step_ids=set(plan["required_step_ids"]),
                 plan_finalized=plan["plan_finalized"],
                 planned_steps=plan["planned_steps"],
             )
             active_errors = _dedup(
                 _combine_active_errors(active_step_issues, snap.get("all_errors", []), recovered_step_issues)
-                + _step_status_errors(snap.get("run_logs", []))
+                + _step_status_errors(run_logs)
             )
             terminal_context = _build_terminal_context(
-                snap.get("run_logs", []),
+                run_logs,
                 active_errors,
             )
-            metrics = _summary_metrics(snap.get("run_logs", []), trace)
-            result_contract = _extract_result_contract_info(None)
+            metrics = _summary_metrics(run_logs, trace)
+            effective_result_data = _last_executed_result_from_run_logs(run_logs)
+            effective_final_sql = snap.get("final_sql") or _last_final_sql_from_run_logs(run_logs)
+            result_contract = _extract_result_contract_info(effective_result_data)
 
             doc = {
                 "run_id": run_id,
@@ -977,7 +1001,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                 },
                 "errors": active_errors,
                 "trace": asdict(trace),
-                "run_logs": snap.get("run_logs", []),
+                "run_logs": run_logs,
                 "failed_step_summary": failed_summary,
                 "active_step_issues": active_step_issues,
                 "recovered_step_issues": recovered_step_issues,
@@ -985,8 +1009,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "terminal_context": terminal_context,
                 "final": {
                     "answer": None,
-                    "sql": snap.get("final_sql"),
-                    "result_data": None,
+                    "sql": effective_final_sql,
+                    "result_data": result_contract,
                 },
             }
 
@@ -1011,38 +1035,41 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "blocked_calls": metrics["guard_stats"]["blocked_calls"],
                     "total_step_errors": metrics["total_step_errors"],
                     "redundant_steps": metrics["redundant_steps"],
-                    "error": _format_error_summary(snap.get("run_logs", [])),
+                    "error": _format_error_summary(run_logs),
                 }
             )
         else:
             trace = extract_agent_trace(r)
+            run_logs = r.run_logs or []
             tokens = asdict(r.tokens) if r.tokens else _empty_token_dict()
-            retrieval = _extract_retrieval_info(r.run_logs or [])
-            plan = _extract_plan_info(r.run_logs or [])
-            failed_summary = _failed_step_summary(r.run_logs or [])
-            active_step_issues, recovered_step_issues = _step_issue_summaries(r.run_logs or [])
-            metrics = _summary_metrics(r.run_logs or [], trace)
+            retrieval = _extract_retrieval_info(run_logs)
+            plan = _extract_plan_info(run_logs)
+            failed_summary = _failed_step_summary(run_logs)
+            active_step_issues, recovered_step_issues = _step_issue_summaries(run_logs)
+            metrics = _summary_metrics(run_logs, trace)
             active_errors = _active_errors_for_result(r)
-            step_outcomes = _build_step_outcomes(r.run_logs or [])
+            step_outcomes = _build_step_outcomes(run_logs)
             valid_sql = _valid_sql_from_steps(
-                r.run_logs or [],
+                run_logs,
                 valid_sql_fallback=r.valid_sql,
             )
             executed = _executed_from_steps(
-                r.run_logs or [],
+                run_logs,
                 executed_fallback=r.executed,
             )
             task_completed = _task_completed_from_steps(
-                r.run_logs or [],
+                run_logs,
                 task_completed_fallback=r.task_completed,
-                final_answer=(r.final_answer or _fallback_answer_from_logs(r.run_logs or [])),
+                final_answer=(r.final_answer or _fallback_answer_from_logs(run_logs)),
                 required_step_ids=set(plan["required_step_ids"]),
                 plan_finalized=plan["plan_finalized"],
                 planned_steps=plan["planned_steps"],
             )
             status = "completed" if task_completed else "incomplete"
-            terminal_context = _build_terminal_context(r.run_logs or [], active_errors)
-            result_contract = _extract_result_contract_info(r.result_data)
+            terminal_context = _build_terminal_context(run_logs, active_errors)
+            effective_result_data = r.result_data or _last_executed_result_from_run_logs(run_logs)
+            effective_final_sql = r.final_sql or _last_final_sql_from_run_logs(run_logs)
+            result_contract = _extract_result_contract_info(effective_result_data)
 
             doc = {
                 "run_id": run_id,
@@ -1079,10 +1106,10 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "final": {
                     "answer": r.final_answer,
                     "answer_missing": not bool(r.final_answer),
-                    "sql": r.final_sql,
+                    "sql": effective_final_sql,
                     "result_data": result_contract,
                 },
-                "run_logs": r.run_logs or [],
+                "run_logs": run_logs,
             }
 
             summary.append(
@@ -1106,7 +1133,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "blocked_calls": metrics["guard_stats"]["blocked_calls"],
                     "total_step_errors": metrics["total_step_errors"],
                     "redundant_steps": metrics["redundant_steps"],
-                    "error": _format_error_summary(r.run_logs or []),
+                    "error": _format_error_summary(run_logs),
                 }
             )
 

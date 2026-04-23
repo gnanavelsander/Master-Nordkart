@@ -235,7 +235,6 @@ async def agent(
         "original_planned_steps": {},
         "original_required_step_ids": set(),
         "zero_rows_replan_counts": {},
-        "clarification_block_count": 0,
     }
 
     state = init_state

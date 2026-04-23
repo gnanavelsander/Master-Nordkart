@@ -200,25 +200,6 @@ async def _model_node(state: AgentState) -> AgentState:
     state["total_iterations"] = state.get("total_iterations", 0) + 1
     state["current_ai_is_final_answer"] = not bool(ai.tool_calls)
 
-    # If the model produced no tool calls and the plan is not yet finalized,
-    # it likely asked a clarification question. Inject a message to force progress.
-    if not ai.tool_calls and not state.get("plan_finalized", False):
-        count = state.get("clarification_block_count", 0) + 1
-        state["clarification_block_count"] = count
-        max_blocks = 2
-        if count <= max_blocks:
-            logger.warning(
-                "      [clarification-block] model stalled without plan (count=%d) — injecting proceed message",
-                count,
-            )
-            msgs = list(state["msgs"])
-            msgs.append(HumanMessage(content=(
-                "Do not ask for clarification. Proceed with the most reasonable interpretation "
-                "and produce a numbered plan, then start executing."
-            )))
-            state["msgs"] = msgs
-            state["current_ai_is_final_answer"] = False
-
     if not state.get("plan_finalized", False):
         planned_steps, required_step_ids = _extract_plan_from_text((ai.content or "").strip())
         if planned_steps:
@@ -400,11 +381,6 @@ def _route_after_model(state: AgentState) -> str:
     ai = state["current_ai"]
 
     if not ai.tool_calls:
-        if not state.get("current_ai_is_final_answer", True):
-            return "model"
-        # Send back to model if we injected a clarification-block message
-        if not state.get("plan_finalized", False) and state.get("clarification_block_count", 0) <= 2:
-            return "model"
         return "finalize"
 
     return "tools"
@@ -509,7 +485,6 @@ Produce a new complete plan with fresh step numbering starting from 1. Options: 
         "sql_repair_counts": {},
         "original_planned_steps": {},
         "original_required_step_ids": set(),
-        "clarification_block_count": 0,
         "replan_trigger": None,
         "replan_count": state.get("replan_count", 0) + 1,
         "current_ai_is_final_answer": False,

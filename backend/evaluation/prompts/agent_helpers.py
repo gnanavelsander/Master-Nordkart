@@ -255,16 +255,12 @@ def _active_plan_run(run_logs: list | None) -> dict | None:
     """Return the run entry that represents the active plan.
 
     After replans, step registries are renumbered from 1 again. Any step-based
-    reporting must therefore read from the active plan only, not from a merge of
-    historical runs.
+    reporting must therefore read from the latest run only, not from an older
+    finalized plan or a merge of historical runs.
     """
     runs = [run for run in (run_logs or []) if isinstance(run, dict)]
     if not runs:
         return None
-
-    for run in reversed(runs):
-        if run.get("plan_finalized"):
-            return run
 
     return runs[-1]
 

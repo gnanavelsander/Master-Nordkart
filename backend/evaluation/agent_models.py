@@ -203,7 +203,6 @@ class AgentState(TypedDict, total=False):
     replan_trigger: Optional[dict]
     replan_count: int
     zero_rows_replan_counts: dict
-    clarification_block_count: int
 
 
 
