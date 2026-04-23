@@ -865,6 +865,9 @@ def _handle_validate_sql_tool(
     is_blocked = isinstance(parsed_result, dict) and str(
         parsed_result.get("error", "")
     ).endswith("blocked.")
+    validated_sqls = dict(state.get("validated_sqls", {}))
+    validated_key = _validated_sql_key(run_id, step_number)
+    had_validated_entry = bool(validated_key and validated_key in validated_sqls)
     step_registry = dict(state.get("step_registry", {}))
     prev = dict(step_registry.get(step_number, {})) if step_number is not None else {}
     prev_payload = prev.get("step_payload") if isinstance(prev.get("step_payload"), dict) else {}
@@ -874,11 +877,19 @@ def _handle_validate_sql_tool(
     state["last_sql"] = sql
     state["last_validation_ok"] = ok
     state["last_validation_error"] = None if (ok or is_blocked) else json.dumps(parsed_result, ensure_ascii=False)
+    state["last_validation_invalidated"] = False
+    state["last_validation_invalidated_reason"] = None
 
     if is_blocked:
         iter_flags["iter_had_error"] = True
         state["last_failed_step"] = step_number
         state["last_validated_sql"] = None
+        if validated_key:
+            validated_sqls.pop(validated_key, None)
+            state["validated_sqls"] = validated_sqls
+        if had_validated_entry:
+            state["last_validation_invalidated"] = True
+            state["last_validation_invalidated_reason"] = "blocked"
         state["last_guard_error"] = json.dumps(parsed_result, ensure_ascii=False)
         state["all_errors"] = _dedup(
             list(state.get("all_errors", [])) + [json.dumps(parsed_result, ensure_ascii=False)]
@@ -912,10 +923,8 @@ def _handle_validate_sql_tool(
     if ok:
         state["last_validated_sql"] = sql
         state["last_guard_error"] = None
-        validated_sqls = dict(state.get("validated_sqls", {}))
-        key = _validated_sql_key(run_id, step_number)
-        if key:
-            validated_sqls[key] = {"sql": sql, "database": database}
+        if validated_key:
+            validated_sqls[validated_key] = {"sql": sql, "database": database}
         state["validated_sqls"] = validated_sqls
 
 
@@ -924,6 +933,12 @@ def _handle_validate_sql_tool(
         iter_flags["iter_had_error"] = True
         state["last_failed_step"] = step_number
         state["last_validated_sql"] = None
+        if validated_key:
+            validated_sqls.pop(validated_key, None)
+            state["validated_sqls"] = validated_sqls
+        if had_validated_entry:
+            state["last_validation_invalidated"] = True
+            state["last_validation_invalidated_reason"] = "failed"
         state["last_guard_error"] = None
         
         _increment_sql_repair(state, step_number)
@@ -1042,6 +1057,8 @@ def _build_step_event(state: "AgentState", name: str, raw_args: dict, args: dict
             "rows_returned": step_meta.get("rows_returned"),
             "sql_repairs": state.get("sql_repair_counts", {}).get(step_number, 0),
             "step_retries": state.get("step_retry_counts", {}).get(step_number, 0),
+            "validation_invalidated": bool(state.get("last_validation_invalidated", False)),
+            "validation_invalidated_reason": state.get("last_validation_invalidated_reason"),
         }
 
     if name in NON_DISCOVERY_EXEC_TOOLS:
