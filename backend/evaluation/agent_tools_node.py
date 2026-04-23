@@ -1249,10 +1249,8 @@ async def _tools_node(state: AgentState) -> AgentState:
                     iter_flags,
                 )
 
-                # Trigger replan if a step succeeds with 0 rows but required steps remain
-                # that depend on this step's data (i.e. non-query steps like spatial_join,
-                # aggregate, etc.).  Independent query steps are unaffected by 0 rows and
-                # should proceed normally — replanning here would cause infinite re-discovery.
+                # A successful step with 0 rows is still a valid executed result.
+                # Do not auto-trigger a backend replan here.
                 if (
                     exec_ok
                     and rows_returned == 0
@@ -1265,46 +1263,11 @@ async def _tools_node(state: AgentState) -> AgentState:
                         if v.get("executed")
                     }
                     remaining = required - executed_now
-                    if remaining:
-                        planned_steps = state.get("planned_steps", {})
-                        # Only flag for replan when at least one remaining step is a
-                        # non-query action (spatial_join, aggregate, sort, limit, clip,
-                        # intersection, difference, attribute_join) that requires data
-                        # from this step.  If all remaining steps are independent "query"
-                        # actions, 0 rows is a valid "no data found" answer and we should
-                        # let the agent continue to those steps without replanning.
-                        dependent_actions = {
-                            "spatial_join", "aggregate", "sort", "limit",
-                            "clip", "intersection", "difference", "attribute_join",
-                        }
-                        normalized_planned = {str(k): v for k, v in planned_steps.items()}
-                        has_dependent_remaining = any(
-                            str(normalized_planned.get(str(sid), {}).get("action", "query")).lower()
-                            in dependent_actions
-                            for sid in remaining
-                        )
-                        if has_dependent_remaining:
-                            step_number = step_obj.get("step") if isinstance(step_obj, dict) else None
-                            sig = _zero_rows_sig(step_obj) if isinstance(step_obj, dict) else str(step_number)
-                            zero_rows_counts = dict(state.get("zero_rows_replan_counts", {}))
-                            zero_rows_counts[sig] = zero_rows_counts.get(sig, 0) + 1
-                            state["zero_rows_replan_counts"] = zero_rows_counts
-                            state["replan_trigger"] = {
-                                "reason": "zero_rows_step",
-                                "error": "planned step executed successfully but returned 0 rows",
-                                "zero_rows_step": step_number,
-                                "zero_rows_sig": sig,
-                            }
-                            logger.info(
-                                "      [replan] Step %s returned 0 rows — %s dependent steps remain, flagging for replan",
-                                step_number, len(remaining),
-                            )
-                        else:
-                            step_number = step_obj.get("step") if isinstance(step_obj, dict) else None
-                            logger.info(
-                                "      [replan-skip] Step %s returned 0 rows — remaining %s steps are independent queries, continuing without replan",
-                                step_number, len(remaining),
-                            )
+                    step_number = step_obj.get("step") if isinstance(step_obj, dict) else None
+                    logger.info(
+                        "      [zero-rows] Step %s returned 0 rows — continuing without replan (%s remaining planned steps)",
+                        step_number, len(remaining),
+                    )
 
             elif name == "tool_validate_sql":
                 blocked_json = _guard_validate_sql(state, args)
