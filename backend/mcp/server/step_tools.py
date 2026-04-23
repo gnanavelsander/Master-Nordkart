@@ -27,80 +27,8 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_step(step: dict, infer_action: str | None = None) -> dict:
-    """Normalize common model field-format variations before PlanStep validation."""
-    step = dict(step)
-
-    # Inject action if missing (model sometimes omits it)
-    if infer_action and "action" not in step:
-        step["action"] = infer_action
-
-    # order_by as list: [{"column": "x", "direction"/"order": "desc"}]
-    order_by = step.get("order_by")
-    if isinstance(order_by, list):
-        first = order_by[0] if order_by else {}
-        if isinstance(first, dict):
-            step["order_by"] = first.get("column") or first.get("col")
-            step["order_direction"] = first.get("direction") or first.get("order") or "desc"
-        else:
-            step.pop("order_by", None)
-    elif isinstance(order_by, str) and " " in order_by:
-        # "building_count DESC" format
-        parts = order_by.split(None, 1)
-        step["order_by"] = parts[0]
-        step["order_direction"] = parts[1].lower() if len(parts) > 1 else "asc"
-
-    # aggregate aliases
-    if "aggregates" in step and "aggregate" not in step:
-        step["aggregate"] = step.pop("aggregates")
-    if "aggregations" in step and "aggregate" not in step:
-        step["aggregate"] = step.pop("aggregations")
-
-    # Inside aggregate list: function→operation, alias→name
-    agg_list = step.get("aggregate")
-    if isinstance(agg_list, list):
-        normalized = []
-        for item in agg_list:
-            if isinstance(item, dict):
-                item = dict(item)
-                if "op" in item and "operation" not in item:
-                    item["operation"] = item.pop("op")
-                if "function" in item and "operation" not in item:
-                    item["operation"] = item.pop("function")
-                if item.get("operation") == "count_distinct":
-                    item["operation"] = "count"
-                    item["distinct"] = True
-                if "as" in item and "name" not in item:
-                    item["name"] = item.pop("as")
-                if "alias" in item and "name" not in item:
-                    item["name"] = item.pop("alias")
-            normalized.append(item)
-        step["aggregate"] = normalized
-        if normalized and isinstance(normalized[0], dict) and "metric_as" not in step:
-            first_name = normalized[0].get("name")
-            if first_name:
-                step["metric_as"] = first_name
-
-    if "column" in step and "metric_column" not in step:
-        step["metric_column"] = step["column"]
-
-    if step.get("aggregation_type") == "count_distinct":
-        step["aggregation_type"] = "count"
-        step["metric_distinct"] = True
-
-    # Some models send explicit null for optional list-like fields.
-    # Treat null group_by as "no grouping" so aggregate(count) can still run.
-    if step.get("group_by") is None:
-        step["group_by"] = []
-
-    # sort key alias: sort=[{"column": ..., "order"/"direction": ...}]
-    if "order_by" not in step and "sort" in step:
-        sort_list = step.get("sort")
-        if isinstance(sort_list, list) and sort_list and isinstance(sort_list[0], dict):
-            first = sort_list[0]
-            step["order_by"] = first.get("column") or first.get("col")
-            step["order_direction"] = first.get("direction") or first.get("order") or "desc"
-
-    return step
+    """Return the step payload unchanged so MCP validates one strict schema only."""
+    return dict(step)
 
 
 
@@ -246,8 +174,7 @@ async def execute_filter_step(ctx: Context[ServerSession, AppContext], run_id: s
     try:
         s = PlanStep.model_validate(_normalize_step(step))
         df = _to_df(_get_rows(ctx, run_id, s.source_step))
-        # Accept both 'filters' (list) and 'filter' (singular string alias)
-        all_filters = s.filters or ([s.filter] if s.filter else [])
+        all_filters = s.filters
         if not df.empty and all_filters:
             for expr in all_filters:
                 try:
@@ -275,7 +202,7 @@ async def execute_select_columns_step(ctx: Context[ServerSession, AppContext], r
     try:
         s = PlanStep.model_validate(_normalize_step(step))
         df = _to_df(_get_rows(ctx, run_id, s.source_step))
-        cols = s.select_columns or s.output_columns or s.columns
+        cols = s.select_columns
         if not df.empty and cols:
             missing = [c for c in cols if c not in df.columns]
             if missing:
@@ -364,10 +291,9 @@ async def execute_attribute_join_step(ctx: Context[ServerSession, AppContext], r
     step_no = step.get("step") if isinstance(step, dict) else -1
     try:
         s = PlanStep.model_validate(_normalize_step(step))
-        # Accept both 'join_keys' (list) and 'join_key' (singular alias)
-        keys = s.join_keys or ([s.join_key] if s.join_key else [])
+        keys = s.join_keys
         if not keys:
-            return _err(step_no, "attribute_join", "join_keys (or join_key) is required.")
+            return _err(step_no, "attribute_join", "join_keys is required.")
         left_df = _to_df(_get_rows(ctx, run_id, s.left_source))
         right_df = _to_df(_get_rows(ctx, run_id, s.right_source))
         rows = [] if (left_df.empty or right_df.empty) else \
@@ -508,38 +434,22 @@ async def execute_distance_step(ctx: Context[ServerSession, AppContext], run_id:
 async def execute_aggregate_step(ctx: Context[ServerSession, AppContext], run_id: str, step: dict) -> str:
     step_no = step.get("step") if isinstance(step, dict) else -1
     try:
-        norm = _normalize_step(step)
-        s = PlanStep.model_validate(norm)
+        s = PlanStep.model_validate(_normalize_step(step))
         df = _to_df(_get_rows(ctx, run_id, s.source_step))
-
-        # Read aggregate spec from normalized list or PlanStep fields
-        agg_list = norm.get("aggregate")
-        distinct_metric = bool(norm.get("metric_distinct", False))
-        if agg_list and isinstance(agg_list, list) and isinstance(agg_list[0], dict):
-            first = agg_list[0]
-            agg_type = s.aggregation_type or first.get("operation") or "count"
-            metric_col = s.metric_column or first.get("column")
-            metric_as = s.metric_as or first.get("name") or "metric"
-            distinct_metric = distinct_metric or bool(first.get("distinct", False))
-        else:
-            agg_type = s.aggregation_type or "count"
-            metric_col = s.metric_column
-            metric_as = s.metric_as or "metric"
+        agg_type = s.aggregation_type or "count"
+        metric_col = s.metric_column
+        metric_as = s.metric_as or "metric"
         order_by = s.order_by
         order_direction = s.order_direction or "asc"
+
+        if agg_type != "count" and not metric_col:
+            return _err(s.step, "aggregate", f"aggregation_type '{agg_type}' requires metric_column.")
 
         if df.empty:
             out = pd.DataFrame()
         elif agg_type == "count":
-            if distinct_metric and metric_col:
-                out = (
-                    df.groupby(s.group_by)[metric_col].nunique().reset_index(name=metric_as)
-                    if s.group_by
-                    else pd.DataFrame([{metric_as: int(df[metric_col].nunique())}])
-                )
-            else:
-                out = (df.groupby(s.group_by).size().reset_index(name=metric_as)
-                       if s.group_by else pd.DataFrame([{metric_as: len(df)}]))
+            out = (df.groupby(s.group_by).size().reset_index(name=metric_as)
+                   if s.group_by else pd.DataFrame([{metric_as: len(df)}]))
         else:
             out = (df.groupby(s.group_by)[metric_col].agg(agg_type).reset_index(name=metric_as)
                    if s.group_by
@@ -554,8 +464,7 @@ async def execute_aggregate_step(ctx: Context[ServerSession, AppContext], run_id
         _save_rows(ctx, run_id, s.step, rows,
                    step_meta={"action": "aggregate", "aggregation_type": agg_type,
                                "group_by": s.group_by, "metric_column": s.metric_column,
-                               "metric_as": metric_as, "source_step": s.source_step,
-                               "metric_distinct": distinct_metric})
+                               "metric_as": metric_as, "source_step": s.source_step})
         return _ok(run_id, s.step, "aggregate", rows)
     except Exception as e:
         return _err(step_no, "aggregate", str(e))

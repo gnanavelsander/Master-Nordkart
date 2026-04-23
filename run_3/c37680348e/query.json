@@ -1,0 +1,5 @@
+{
+  "query_id": "B12",
+  "query": "Find 10 buildings located in built-up and transport areas in Oslo municipality, sorted by bygningid ascending.",
+  "query_hash": "c37680348e"
+}

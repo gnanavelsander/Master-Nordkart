@@ -1,0 +1,50 @@
+{
+  "run_id": "4df4a8abfd2b40a5bc749eb3dadafa5c",
+  "query_id": "B30",
+  "query": "Find 10 buildings in Stavanger municipality that are located on agricultural land and within soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
+  "timestamp": "2026-04-23T15:26:16Z",
+  "prompt_name": "evaluation_v1",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "timeout": 300,
+    "max_retries": 0,
+    "tool_choice": "auto",
+    "max_iterations": 30,
+    "max_sql_repairs": 2,
+    "max_step_retries": 2,
+    "max_replans": 2,
+    "max_plan_steps": 8,
+    "top_p": null,
+    "reasoning_effort": null
+  },
+  "model_ids": [
+    "gpt-5-mini"
+  ],
+  "summary": [
+    {
+      "model_id": "gpt-5-mini",
+      "status": "incomplete",
+      "valid_sql": true,
+      "executed": true,
+      "steps_executed": {
+        "1": true
+      },
+      "task_completed": false,
+      "iterations": 30,
+      "total_tool_calls": 30,
+      "latency_s": 694.416,
+      "total_tokens": 258903,
+      "retrieval_scope_active": false,
+      "retrieval_top_score": null,
+      "full_result_row_count": null,
+      "sql_repairs": 0,
+      "step_retries": 0,
+      "replans": 1,
+      "blocked_calls": 18,
+      "total_step_errors": 19,
+      "redundant_steps": 0,
+      "error": "2 errors (step 1: 2)"
+    }
+  ]
+}

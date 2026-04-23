@@ -1,0 +1,5 @@
+{
+  "query_id": "B2",
+  "query": "Find 10 disputed parcels in Bergen municipality, sorted by teigid ascending.",
+  "query_hash": "f804cfab88"
+}

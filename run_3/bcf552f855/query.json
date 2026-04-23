@@ -1,0 +1,5 @@
+{
+  "query_id": "B11",
+  "query": "Find 10 parcels located in agricultural land in Stavanger municipality, sorted by teigid ascending.",
+  "query_hash": "bcf552f855"
+}

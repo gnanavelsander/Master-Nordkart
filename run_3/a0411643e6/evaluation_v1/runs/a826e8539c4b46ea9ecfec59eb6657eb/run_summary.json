@@ -1,0 +1,48 @@
+{
+  "run_id": "a826e8539c4b46ea9ecfec59eb6657eb",
+  "query_id": "B19",
+  "query": "Find 10 parcels within 100 metres of flood hazard areas in Kristiansand municipality, sorted by shortest distance first.",
+  "timestamp": "2026-04-23T02:24:07Z",
+  "prompt_name": "evaluation_v1",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "timeout": 300,
+    "max_retries": 0,
+    "tool_choice": "auto",
+    "max_iterations": 30,
+    "max_sql_repairs": 2,
+    "max_step_retries": 1,
+    "max_replans": 1,
+    "max_plan_steps": 8,
+    "top_p": null,
+    "reasoning_effort": null
+  },
+  "model_ids": [
+    "gpt-5-mini"
+  ],
+  "summary": [
+    {
+      "model_id": "gpt-5-mini",
+      "status": "incomplete",
+      "valid_sql": false,
+      "executed": false,
+      "steps_executed": {},
+      "task_completed": false,
+      "iterations": 30,
+      "total_tool_calls": 30,
+      "latency_s": 416.417,
+      "total_tokens": 374639,
+      "retrieval_scope_active": false,
+      "retrieval_top_score": null,
+      "full_result_row_count": null,
+      "sql_repairs": 0,
+      "step_retries": 0,
+      "replans": 0,
+      "blocked_calls": 24,
+      "total_step_errors": 24,
+      "redundant_steps": 0,
+      "error": "23 errors (step 1: 23)"
+    }
+  ]
+}

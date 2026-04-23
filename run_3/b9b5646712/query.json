@@ -1,0 +1,5 @@
+{
+  "query_id": "B37",
+  "query": "Find 10 buildings in Trondheim municipality that are exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas at the same time, sorted by bygningid ascending.",
+  "query_hash": "b9b5646712"
+}

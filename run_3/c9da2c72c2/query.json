@@ -1,0 +1,5 @@
+{
+  "query_id": "B21",
+  "query": "Find 10 parcels within 100 metres of quick-clay hazard areas in Trondheim municipality, sorted by shortest distance first.",
+  "query_hash": "c9da2c72c2"
+}

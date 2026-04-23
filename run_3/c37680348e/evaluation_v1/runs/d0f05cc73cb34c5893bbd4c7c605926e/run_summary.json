@@ -1,0 +1,48 @@
+{
+  "run_id": "d0f05cc73cb34c5893bbd4c7c605926e",
+  "query_id": "B12",
+  "query": "Find 10 buildings located in built-up and transport areas in Oslo municipality, sorted by bygningid ascending.",
+  "timestamp": "2026-04-23T04:46:09Z",
+  "prompt_name": "evaluation_v1",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "timeout": 300,
+    "max_retries": 0,
+    "tool_choice": "auto",
+    "max_iterations": 30,
+    "max_sql_repairs": 2,
+    "max_step_retries": 2,
+    "max_replans": 2,
+    "max_plan_steps": 8,
+    "top_p": null,
+    "reasoning_effort": null
+  },
+  "model_ids": [
+    "gpt-5-mini"
+  ],
+  "summary": [
+    {
+      "model_id": "gpt-5-mini",
+      "status": "incomplete",
+      "valid_sql": false,
+      "executed": false,
+      "steps_executed": {},
+      "task_completed": false,
+      "iterations": 30,
+      "total_tool_calls": 28,
+      "latency_s": 272.214,
+      "total_tokens": 209917,
+      "retrieval_scope_active": false,
+      "retrieval_top_score": null,
+      "full_result_row_count": null,
+      "sql_repairs": 2,
+      "step_retries": 0,
+      "replans": 2,
+      "blocked_calls": 8,
+      "total_step_errors": 12,
+      "redundant_steps": 0,
+      "error": "10 errors (step 1: 6, step 3: 3, step 4: 1)"
+    }
+  ]
+}

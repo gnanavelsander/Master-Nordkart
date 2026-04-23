@@ -1,0 +1,48 @@
+{
+  "run_id": "04322a5eb8084c4ea7293d49a73217f8",
+  "query_id": "B6",
+  "query": "Count all parcels in flood hazard areas in Oslo municipality.",
+  "timestamp": "2026-04-23T04:12:52Z",
+  "prompt_name": "evaluation_v1",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "timeout": 300,
+    "max_retries": 0,
+    "tool_choice": "auto",
+    "max_iterations": 30,
+    "max_sql_repairs": 2,
+    "max_step_retries": 2,
+    "max_replans": 2,
+    "max_plan_steps": 8,
+    "top_p": null,
+    "reasoning_effort": null
+  },
+  "model_ids": [
+    "gpt-5-mini"
+  ],
+  "summary": [
+    {
+      "model_id": "gpt-5-mini",
+      "status": "incomplete",
+      "valid_sql": false,
+      "executed": false,
+      "steps_executed": {},
+      "task_completed": false,
+      "iterations": 30,
+      "total_tool_calls": 30,
+      "latency_s": 508.632,
+      "total_tokens": 253914,
+      "retrieval_scope_active": false,
+      "retrieval_top_score": null,
+      "full_result_row_count": null,
+      "sql_repairs": 0,
+      "step_retries": 0,
+      "replans": 0,
+      "blocked_calls": 21,
+      "total_step_errors": 22,
+      "redundant_steps": 0,
+      "error": "10 errors (step 1: 10)"
+    }
+  ]
+}

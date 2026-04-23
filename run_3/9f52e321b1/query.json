@@ -1,0 +1,5 @@
+{
+  "query_id": "B31",
+  "query": "Find 10 parcels in Trondheim municipality that are located in both flood hazard areas and quick-clay hazard areas, sorted by teigid ascending.",
+  "query_hash": "9f52e321b1"
+}

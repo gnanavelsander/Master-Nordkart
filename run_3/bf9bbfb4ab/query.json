@@ -1,0 +1,5 @@
+{
+  "query_id": "B38",
+  "query": "Find 10 buildings in Bergen municipality that are contained in both storm-surge areas and the 200-year flood zone, sorted by bygningid ascending.",
+  "query_hash": "bf9bbfb4ab"
+}

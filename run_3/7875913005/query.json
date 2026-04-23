@@ -1,0 +1,5 @@
+{
+  "query_id": "B15",
+  "query": "Find 10 buildings located in quick-clay hazard areas in Trondheim municipality, sorted by bygningid ascending.",
+  "query_hash": "7875913005"
+}

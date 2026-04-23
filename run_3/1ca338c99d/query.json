@@ -1,0 +1,5 @@
+{
+  "query_id": "B14",
+  "query": "Find 10 buildings located in soil- and flood-landslide hazard areas in Stavanger municipality, sorted by bygningid ascending.",
+  "query_hash": "1ca338c99d"
+}

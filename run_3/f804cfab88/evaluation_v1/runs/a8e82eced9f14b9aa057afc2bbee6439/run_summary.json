@@ -1,0 +1,51 @@
+{
+  "run_id": "a8e82eced9f14b9aa057afc2bbee6439",
+  "query_id": "B2",
+  "query": "Find 10 disputed parcels in Bergen municipality, sorted by teigid ascending.",
+  "timestamp": "2026-04-23T03:57:03Z",
+  "prompt_name": "evaluation_v1",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "timeout": 300,
+    "max_retries": 0,
+    "tool_choice": "auto",
+    "max_iterations": 30,
+    "max_sql_repairs": 2,
+    "max_step_retries": 2,
+    "max_replans": 2,
+    "max_plan_steps": 8,
+    "top_p": null,
+    "reasoning_effort": null
+  },
+  "model_ids": [
+    "gpt-5-mini"
+  ],
+  "summary": [
+    {
+      "model_id": "gpt-5-mini",
+      "status": "completed",
+      "valid_sql": true,
+      "executed": true,
+      "steps_executed": {
+        "1": true,
+        "2": true
+      },
+      "task_completed": true,
+      "iterations": 16,
+      "total_tool_calls": 15,
+      "latency_s": 129.147,
+      "total_tokens": 85528,
+      "retrieval_scope_active": false,
+      "retrieval_top_score": null,
+      "full_result_row_count": 10,
+      "sql_repairs": 0,
+      "step_retries": 0,
+      "replans": 1,
+      "blocked_calls": 3,
+      "total_step_errors": 4,
+      "redundant_steps": 0,
+      "error": "3 errors (step 1: 2, step 2: 1)"
+    }
+  ]
+}

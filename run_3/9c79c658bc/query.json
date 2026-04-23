@@ -1,0 +1,5 @@
+{
+  "query_id": "B20",
+  "query": "Find 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo municipality, sorted by shortest distance first.",
+  "query_hash": "9c79c658bc"
+}

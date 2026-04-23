@@ -1,0 +1,5 @@
+{
+  "query_id": "B28",
+  "query": "Find 10 buildings in Kristiansand municipality that are located both in flood hazard areas and on agricultural land, sorted by bygningid ascending.",
+  "query_hash": "b1b2dbcd84"
+}

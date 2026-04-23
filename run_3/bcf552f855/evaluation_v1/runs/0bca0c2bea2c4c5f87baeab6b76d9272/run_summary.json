@@ -1,0 +1,53 @@
+{
+  "run_id": "0bca0c2bea2c4c5f87baeab6b76d9272",
+  "query_id": "B11",
+  "query": "Find 10 parcels located in agricultural land in Stavanger municipality, sorted by teigid ascending.",
+  "timestamp": "2026-04-23T04:41:00Z",
+  "prompt_name": "evaluation_v1",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "timeout": 300,
+    "max_retries": 0,
+    "tool_choice": "auto",
+    "max_iterations": 30,
+    "max_sql_repairs": 2,
+    "max_step_retries": 2,
+    "max_replans": 2,
+    "max_plan_steps": 8,
+    "top_p": null,
+    "reasoning_effort": null
+  },
+  "model_ids": [
+    "gpt-5-mini"
+  ],
+  "summary": [
+    {
+      "model_id": "gpt-5-mini",
+      "status": "incomplete",
+      "valid_sql": true,
+      "executed": true,
+      "steps_executed": {
+        "1": true,
+        "2": true,
+        "3": true,
+        "4": true
+      },
+      "task_completed": false,
+      "iterations": 28,
+      "total_tool_calls": 28,
+      "latency_s": 237.331,
+      "total_tokens": 209224,
+      "retrieval_scope_active": false,
+      "retrieval_top_score": null,
+      "full_result_row_count": null,
+      "sql_repairs": 0,
+      "step_retries": 0,
+      "replans": 2,
+      "blocked_calls": 3,
+      "total_step_errors": 3,
+      "redundant_steps": 0,
+      "error": "2 errors (step 3: 1, step 4: 1)"
+    }
+  ]
+}

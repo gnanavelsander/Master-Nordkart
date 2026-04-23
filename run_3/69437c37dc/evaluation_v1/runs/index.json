@@ -1,0 +1,11 @@
+[
+  {
+    "run_id": "50a6b5d0bd8b496b8c812f7377389214",
+    "timestamp": "2026-04-23T04:30:16Z",
+    "models_run": [
+      "gpt-5-mini"
+    ],
+    "prompt_name": "evaluation_v1",
+    "embedding_active": false
+  }
+]

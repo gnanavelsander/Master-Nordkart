@@ -1,12 +1,9 @@
 
 import json
-import logging
 
 import geopandas as gpd
 import pandas as pd
 from shapely import wkb as shapely_wkb, wkt as shapely_wkt
-
-logger = logging.getLogger(__name__)
 
 
 
@@ -177,9 +174,13 @@ def _to_gdf(
     if df.empty:
         return gpd.GeoDataFrame(df, geometry=[], crs=crs)
 
-    detected_geom = geom_col or _detect_geom_col(df)
-    if detected_geom is None:
-        raise ValueError(f"No geometry column found. Available columns: {list(df.columns)}")
+    if not geom_col:
+        raise ValueError(
+            "Geometry column is required for geometry operations. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    detected_geom = geom_col
 
     if detected_geom not in df.columns:
         raise ValueError(
@@ -189,17 +190,12 @@ def _to_gdf(
     df = df.copy()
     df[detected_geom] = df[detected_geom].apply(_decode_geom)
 
-    # Drop invalid rows instead of crashing — backend must be stable
     valid_mask = df[detected_geom].apply(lambda g: g is not None and hasattr(g, "geom_type"))
-    n_dropped = int((~valid_mask).sum())
-    if n_dropped > 0:
-        logger.warning(
-            "_to_gdf: dropped %d/%d rows with invalid geometry in column '%s'",
-            n_dropped, len(df), detected_geom,
+    invalid_count = int((~valid_mask).sum())
+    if invalid_count > 0:
+        raise ValueError(
+            f"Invalid geometry values in column '{detected_geom}': "
+            f"{invalid_count} of {len(df)} rows could not be decoded."
         )
-    df = df[valid_mask].reset_index(drop=True)
-
-    if df.empty:
-        return gpd.GeoDataFrame(df, geometry=[], crs=crs)
 
     return gpd.GeoDataFrame(df, geometry=detected_geom, crs=crs)

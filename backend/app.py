@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(EVAL_DIR))
 
 from backend.evaluation.pipeline_runner import run_all
-from backend.evaluation.agent_helpers import load_prompt, _short, _dedup
+from backend.evaluation.prompts.agent_helpers import load_prompt, _short, _dedup
 from backend.evaluation.agent_models import ModelParams, AgentRunError, PipelineResult
 from backend.evaluation.reporting import (
     extract_agent_trace,

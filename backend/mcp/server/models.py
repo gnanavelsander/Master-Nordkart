@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from backend.database import PoolManager
 
@@ -22,6 +22,8 @@ class AppContext:
 # --------------------------------------------------
 
 class PlanStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     step: int
     action: Literal[
         "query", "filter", "select_columns", "spatial_join", "attribute_join",
@@ -48,14 +50,8 @@ class PlanStep(BaseModel):
 
 
     filters: list[str] = Field(default_factory=list)   
-    filter: Optional[str] = None 
-
 
     select_columns: list[str] = Field(default_factory=list)
-    output_columns: list[str] = Field(default_factory=list)
-
-
-    columns: list[str] = Field(default_factory=list)
 
 
     group_by: list[str] = Field(default_factory=list)
@@ -79,8 +75,6 @@ class PlanStep(BaseModel):
 
 
     join_keys: list[str] = Field(default_factory=list)  
-    join_key: Optional[str] = None         
-    
                   
     schema_name: Optional[str] = None
     table_name: Optional[str] = None

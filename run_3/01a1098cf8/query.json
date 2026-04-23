@@ -1,0 +1,5 @@
+{
+  "query_id": "B27",
+  "query": "Find 10 buildings in Drammen municipality that intersect the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
+  "query_hash": "01a1098cf8"
+}

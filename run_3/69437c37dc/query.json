@@ -1,0 +1,5 @@
+{
+  "query_id": "B9",
+  "query": "Find 10 garage buildings in Bergen municipality, sorted by bygningid ascending.",
+  "query_hash": "69437c37dc"
+}

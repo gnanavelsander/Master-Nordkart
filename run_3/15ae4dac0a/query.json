@@ -1,0 +1,5 @@
+{
+  "query_id": "B33",
+  "query": "Find 10 buildings in Bergen municipality that are located in storm-surge areas, sorted by bygningid ascending, and report both municipality and county.",
+  "query_hash": "15ae4dac0a"
+}

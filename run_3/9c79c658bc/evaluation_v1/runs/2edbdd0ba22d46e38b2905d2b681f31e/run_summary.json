@@ -1,0 +1,56 @@
+{
+  "run_id": "2edbdd0ba22d46e38b2905d2b681f31e",
+  "query_id": "B20",
+  "query": "Find 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo municipality, sorted by shortest distance first.",
+  "timestamp": "2026-04-23T05:36:31Z",
+  "prompt_name": "evaluation_v1",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "timeout": 300,
+    "max_retries": 0,
+    "tool_choice": "auto",
+    "max_iterations": 30,
+    "max_sql_repairs": 2,
+    "max_step_retries": 2,
+    "max_replans": 2,
+    "max_plan_steps": 8,
+    "top_p": null,
+    "reasoning_effort": null
+  },
+  "model_ids": [
+    "gpt-5-mini"
+  ],
+  "summary": [
+    {
+      "model_id": "gpt-5-mini",
+      "status": "completed",
+      "valid_sql": true,
+      "executed": true,
+      "steps_executed": {
+        "1": true,
+        "2": true,
+        "3": true,
+        "4": true,
+        "5": true,
+        "6": true,
+        "7": true
+      },
+      "task_completed": true,
+      "iterations": 26,
+      "total_tool_calls": 25,
+      "latency_s": 360.599,
+      "total_tokens": 186017,
+      "retrieval_scope_active": false,
+      "retrieval_top_score": null,
+      "full_result_row_count": 10,
+      "sql_repairs": 1,
+      "step_retries": 0,
+      "replans": 1,
+      "blocked_calls": 3,
+      "total_step_errors": 4,
+      "redundant_steps": 0,
+      "error": "4 errors (step 1: 1, step 3: 2, step 4: 1)"
+    }
+  ]
+}

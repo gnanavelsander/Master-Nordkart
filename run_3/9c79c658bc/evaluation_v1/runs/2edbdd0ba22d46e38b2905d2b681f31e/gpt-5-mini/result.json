@@ -1,0 +1,549 @@
+{
+  "run_id": "2edbdd0ba22d46e38b2905d2b681f31e",
+  "query": "Find 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo municipality, sorted by shortest distance first.",
+  "model_id": "gpt-5-mini",
+  "status": "completed",
+  "valid_sql": true,
+  "executed": true,
+  "task_completed": true,
+  "model_task_completed": true,
+  "iterations": 26,
+  "total_tool_calls": 25,
+  "latency_s": 360.599,
+  "tokens": {
+    "prompt_tokens": 166543,
+    "completion_tokens": 19474,
+    "total_tokens": 186017
+  },
+  "retrieval": {
+    "scope_active": false,
+    "top_score": null,
+    "candidates": []
+  },
+  "plan_finalized": true,
+  "planned_steps": {
+    "1": {
+      "step": 1,
+      "action": "query",
+      "description": "get bounding box of Oslo (kommunenummer 0301) in EPSG:25833",
+      "database": "kommuner"
+    },
+    "2": {
+      "step": 2,
+      "action": "query",
+      "description": "get all buildings in Oslo with geometry (as GeoJSON, transformed to 4326)",
+      "database": "matrikkelenbygning"
+    },
+    "3": {
+      "step": 3,
+      "action": "query",
+      "description": "get hazard polygons that intersect Oslo bbox (pre-filter by envelope using bbox literals)",
+      "database": "aktsomhetskart_jord_flomskred"
+    },
+    "4": {
+      "step": 4,
+      "action": "nearest",
+      "description": "find nearest hazard for each building and compute distance",
+      "database": null
+    },
+    "5": {
+      "step": 5,
+      "action": "filter",
+      "description": "keep only pairs with distance <= 100 metres",
+      "database": null
+    },
+    "6": {
+      "step": 6,
+      "action": "sort",
+      "description": "sort by distance ascending",
+      "database": null
+    },
+    "7": {
+      "step": 7,
+      "action": "limit",
+      "description": "return top 10 results",
+      "database": null
+    }
+  },
+  "required_step_ids": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7"
+  ],
+  "result": {
+    "model_summary_result": {
+      "columns": [
+        "bygningsnummer",
+        "bygningid",
+        "kommunenummer",
+        "kommunenavn",
+        "geom_geojson",
+        "index_right",
+        "objid",
+        "skredtype",
+        "distance"
+      ],
+      "row_count": 10,
+      "sample_rows": [
+        {
+          "bygningsnummer": 81046425,
+          "bygningid": 287558976,
+          "kommunenummer": "0301",
+          "kommunenavn": "OSLO",
+          "index_right": 197,
+          "objid": 188068,
+          "skredtype": "140",
+          "distance": 0.0
+        },
+        {
+          "bygningsnummer": 80693850,
+          "bygningid": 286960940,
+          "kommunenummer": "0301",
+          "kommunenavn": "OSLO",
+          "index_right": 410,
+          "objid": 188612,
+          "skredtype": "140",
+          "distance": 0.0
+        },
+        {
+          "bygningsnummer": 80383193,
+          "bygningid": 286398641,
+          "kommunenummer": "0301",
+          "kommunenavn": "OSLO",
+          "index_right": 179,
+          "objid": 187432,
+          "skredtype": "140",
+          "distance": 0.0
+        },
+        {
+          "bygningsnummer": 80383185,
+          "bygningid": 286398634,
+          "kommunenummer": "0301",
+          "kommunenavn": "OSLO",
+          "index_right": 179,
+          "objid": 187432,
+          "skredtype": "140",
+          "distance": 0.0
+        },
+        {
+          "bygningsnummer": 80382855,
+          "bygningid": 286398545,
+          "kommunenummer": "0301",
+          "kommunenavn": "OSLO",
+          "index_right": 179,
+          "objid": 187432,
+          "skredtype": "140",
+          "distance": 0.0
+        }
+      ],
+      "result_truncated_for_model": true
+    },
+    "full_result_available": true,
+    "full_result_row_count": 10
+  },
+  "guard_stats": {
+    "sql_repairs": {
+      "total": 1,
+      "by_step": {
+        "3": 1
+      }
+    },
+    "step_retries": {
+      "total": 0,
+      "by_step": {}
+    },
+    "replans": 1,
+    "blocked_calls": 3,
+    "pre_plan_guard_blocks": 1,
+    "replan_events": [
+      {
+        "trigger": "blocked_step",
+        "step": 3,
+        "action": null,
+        "blocked_count": null,
+        "detail": "Step 3 is planned to query database 'aktsomhetskart_jord_flomskred', but was attempted against 'kommuner'. Produce a new plan or keep this step on the planned database.",
+        "replan_index": 0
+      }
+    ],
+    "tool_shape_errors": {},
+    "unplanned_step_blocks": {},
+    "locked_step_blocks": {},
+    "missing_source_step": {
+      "nearest": 1
+    }
+  },
+  "process": {
+    "total_step_errors": 4,
+    "discovery_calls": 7,
+    "redundant_steps": 0,
+    "db_count_used": 3
+  },
+  "errors": [],
+  "trace": {
+    "tables_explored": [
+      "aktsomhetsomrjordogflomskred",
+      "malemetode",
+      "skredtypedetaljert",
+      "spatial_ref_sys",
+      "bruksenhet",
+      "bygning",
+      "bygningsstatuskode",
+      "bygningstypekode",
+      "kommunenummer",
+      "naringsgruppekode",
+      "opprinnelseskode",
+      "sefrakident",
+      "administrativenhetnavn",
+      "grense",
+      "kommune",
+      "sprakkode",
+      "typeavgrensning"
+    ],
+    "tables_in_result": [
+      "aktsomhetsomrjordogflomskred",
+      "bygning",
+      "kommunenummer",
+      "kommune"
+    ],
+    "databases_explored": [
+      "matrikkelenbygning",
+      "flomaktsomrader",
+      "flomsoner",
+      "kvikkleire",
+      "snoskredaktsomhetskart",
+      "matrikkeleneiendomskartteig",
+      "aktsomhetskart_jord_flomskred",
+      "kommuner",
+      "fylker",
+      "statistiskrutenett1km",
+      "arealressurskart_ar50",
+      "stormflohavniva"
+    ],
+    "databases_in_result": [
+      "kommuner",
+      "matrikkelenbygning",
+      "aktsomhetskart_jord_flomskred"
+    ],
+    "validated_before_exec": true,
+    "executed_successfully": true,
+    "total_tool_calls": 25,
+    "executions": [
+      {
+        "iteration": 16,
+        "step": "1",
+        "action": "query",
+        "database": "kommuner",
+        "sql": "SELECT ST_XMin(ext) AS xmin, ST_YMin(ext) AS ymin, ST_XMax(ext) AS xmax, ST_YMax(ext) AS ymax FROM (SELECT ST_Extent(omrade) AS ext FROM kommuner_627ee106072240e99d2b21ec4717bf01.kommune WHERE kommunenummer = '0301') t;",
+        "success": true,
+        "error": null,
+        "rows_returned": 1,
+        "status": "ok"
+      },
+      {
+        "iteration": 18,
+        "step": "2",
+        "action": "query",
+        "database": "matrikkelenbygning",
+        "sql": "SELECT bygningsnummer, bygningid, kommunenummer, kommunenavn, ST_AsGeoJSON(ST_Transform(representasjonspunkt,4326)) AS geom_geojson FROM matrikkelenbygning_fe504ac373564e10b85865ef2a507c63.bygning WHERE kommunenummer = '0301' AND representasjonspunkt IS NOT NULL;",
+        "success": true,
+        "error": null,
+        "rows_returned": 135467,
+        "status": "ok"
+      },
+      {
+        "iteration": 20,
+        "step": "3",
+        "action": "query",
+        "database": "aktsomhetskart_jord_flomskred",
+        "sql": "SELECT objid, skredtype, ST_AsGeoJSON(ST_Transform(geometri,4326)) AS geom_geojson FROM aktsomhetskartforjordogflomskred_83e4643e9cbd4a3a98fd29cb231c74.aktsomhetsomrjordogflomskred WHERE geometri && ST_MakeEnvelope(248657.27999772702,6637442.109999995,273925.9199989579,6674528.679999999,25833);",
+        "success": true,
+        "error": null,
+        "rows_returned": 1306,
+        "status": "ok"
+      },
+      {
+        "iteration": 22,
+        "step": "4",
+        "action": "nearest",
+        "database": "",
+        "sql": "",
+        "success": true,
+        "error": null,
+        "rows_returned": 135467,
+        "status": "ok"
+      },
+      {
+        "iteration": 23,
+        "step": "5",
+        "action": "filter",
+        "database": "",
+        "sql": "",
+        "success": true,
+        "error": null,
+        "rows_returned": 135467,
+        "status": "ok"
+      },
+      {
+        "iteration": 24,
+        "step": "6",
+        "action": "sort",
+        "database": "",
+        "sql": "",
+        "success": true,
+        "error": null,
+        "rows_returned": 135467,
+        "status": "ok"
+      },
+      {
+        "iteration": 25,
+        "step": "7",
+        "action": "limit",
+        "database": "",
+        "sql": "",
+        "success": true,
+        "error": null,
+        "rows_returned": 10,
+        "status": "ok"
+      }
+    ],
+    "tool_call_counts": {
+      "tool_get_available_databases": 1,
+      "tool_get_database_catalog": 3,
+      "tool_get_table_schema": 3,
+      "tool_validate_sql": 8,
+      "tool_execute_query_step": 5,
+      "tool_execute_nearest_step": 2,
+      "tool_execute_filter_step": 1,
+      "tool_execute_sort_step": 1,
+      "tool_execute_limit_step": 1
+    }
+  },
+  "failed_step_summary": null,
+  "active_step_issues": [],
+  "recovered_step_issues": [
+    {
+      "step": 4,
+      "action": "nearest",
+      "status": "ok",
+      "database": "",
+      "sql": "",
+      "error": "{\"executed\": false, \"error\": \"tool_execute_nearest_step blocked.\", \"reason\": \"nearest requires left_source and right_source as plain integers (step numbers).\", \"step\": 4, \"action\": \"nearest\"}",
+      "sql_repairs": 0,
+      "step_retries": 0,
+      "recovered": true
+    }
+  ],
+  "step_outcomes": [
+    {
+      "step": "1",
+      "action": "query",
+      "validated": true,
+      "executed": true,
+      "rows_returned": 1,
+      "status": "ok"
+    },
+    {
+      "step": "2",
+      "action": "query",
+      "validated": true,
+      "executed": true,
+      "rows_returned": 135467,
+      "status": "ok"
+    },
+    {
+      "step": "3",
+      "action": "query",
+      "validated": true,
+      "executed": true,
+      "rows_returned": 1306,
+      "status": "ok"
+    },
+    {
+      "step": "4",
+      "action": "nearest",
+      "validated": false,
+      "executed": true,
+      "rows_returned": 135467,
+      "status": "ok"
+    },
+    {
+      "step": "5",
+      "action": "filter",
+      "validated": false,
+      "executed": true,
+      "rows_returned": 135467,
+      "status": "ok"
+    },
+    {
+      "step": "6",
+      "action": "sort",
+      "validated": false,
+      "executed": true,
+      "rows_returned": 135467,
+      "status": "ok"
+    },
+    {
+      "step": "7",
+      "action": "limit",
+      "validated": false,
+      "executed": true,
+      "rows_returned": 10,
+      "status": "ok"
+    }
+  ],
+  "terminal_context": {
+    "has_errors": false,
+    "terminal_error": null,
+    "last_completed_iteration": 26,
+    "last_ai_content": "I performed the requested multi-database workflow and produced the top 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo, sorted by shortest distance.\n\nResults (10 rows) \u2014 columns: bygningsnummer, bygningid, kommunenummer, kommunenavn, index_right (hazard row index), objid (hazard id), skredtype, distance (metres)\n1. bygningsnummer=81046425, bygningid=287558976, kommunenummer=0301, kommunenavn=OSLO, index_right=197, objid=188068, skredtype=140, distance=0.0\n2. bygningsnummer=80693850, bygningid=286960940, kommunenummer=0301, kommunenavn=OSLO, index_right=410, objid=188612, skredtype=140, distance=0.0\n3. bygningsnummer=80383193, bygningid=286398641, kommunenummer=0301, kommunenavn=OSLO, index_right=179, objid=187432, skredtype=140, distance=0.0\n4. bygningsnummer=80383185, bygningid=286398634, kommunenummer=0301, kommunenavn=OSLO, index_right=179, objid=187432, skredtype=140, distance=0.0\n5. bygningsnummer=80382855, bygningid=286398545, kommunenummer=0301, kommunenavn=OSLO, index_right=179, objid=187432, skredtype=140, distance=0.0\n6. bygningsnummer=807... (workflow complete; full 10-row table returned in the executed step results)\n\nNote: I only report values directly from executed steps. If you need the full table with all attributes or GeoJSON geometries included, or prefer distances in metres with higher precision or different tie-breaking, tell me which additional columns or format you want and I will re-run with the requested output.",
+    "last_tool_call_count": 0,
+    "last_tool": null,
+    "recent_iterations": [
+      {
+        "iteration": 24,
+        "ai_content": "",
+        "tool_calls_declared": 1,
+        "tool_names": [
+          "tool_execute_sort_step"
+        ],
+        "iteration_error": null,
+        "failed_step": null,
+        "had_error": false,
+        "had_validation_error": false,
+        "had_exec_success": true,
+        "last_tool": {
+          "tool": "tool_execute_sort_step",
+          "args": {
+            "run_id": "011bbfc26aee46c395ed39248782d429",
+            "step": {
+              "step": 6,
+              "action": "sort",
+              "source_step": 5,
+              "order_by": "distance",
+              "order_direction": "asc"
+            }
+          },
+          "result": "{\"executed\": true, \"run_id\": \"011bbfc26aee46c395ed39248782d429\", \"step\": 6, \"action\": \"sort\", \"row_count\": 135467, \"rows_returned\": 135467, \"columns\": [\"bygningsnummer\", \"bygningid\", \"kommunenummer\", \"kommunenavn\", \"geom_geojson\", \"index_right\", \"objid\", \"skredtype\", \"distance\"], \"sample_rows\": [{\"bygningsnummer\": 81046425, \"bygningid\": 287558976, \"kommunenummer\": \"0301\", \"kommunenavn\": \"OSLO\", \"index_right\": 197, \"objid\": 188068, \"skredtype\": \"140\", \"distance\": 0.0}, {\"bygningsnummer\": 80693850, \"bygningid\": 286960940, \"kommunenummer\": \"0301\", \"kommunenavn\": \"OSLO\", \"index_right\": 410, \"objid\": 188612, \"skredtype\": \"140\", \"distance\": 0.0}, {\"bygningsnummer\": 80383193, \"bygningid\": 286398641, \"kommunenummer\": \"0301\", \"kommunenavn\": \"OSLO\", \"index_right\": 179, \"objid\": 187432, \"skredtype\": \"140\", \"distance\": 0.0}, {\"bygningsnummer\": 80383185, \"bygningid\": 286398634, \"kommunenummer\": \"0301\", \"kommunenavn\": \"OSLO\", \"index_right\": 179, \"objid\": 187432, \"skredtype\": \"140\", \"distance\": 0.0}, {\"bygningsnummer\": 80382855, \"bygningid\": 286398545, \"kommunenummer\": \"0301\", \"kommunenavn\": \"OSLO\", \"index_right\": 179, \"objid\": 187432, \"skredtype\": \"140\", \"distance\": 0.0}], \"result_truncated_for_model\": true}"
+        }
+      },
+      {
+        "iteration": 25,
+        "ai_content": "",
+        "tool_calls_declared": 1,
+        "tool_names": [
+          "tool_execute_limit_step"
+        ],
+        "iteration_error": null,
+        "failed_step": null,
+        "had_error": false,
+        "had_validation_error": false,
+        "had_exec_success": true,
+        "last_tool": {
+          "tool": "tool_execute_limit_step",
+          "args": {
+            "run_id": "011bbfc26aee46c395ed39248782d429",
+            "step": {
+              "step": 7,
+              "action": "limit",
+              "source_step": 6,
+              "limit": 10
+            }
+          },
+          "result": "{\"executed\": true, \"run_id\": \"011bbfc26aee46c395ed39248782d429\", \"step\": 7, \"action\": \"limit\", \"row_count\": 10, \"rows_returned\": 10, \"columns\": [\"bygningsnummer\", \"bygningid\", \"kommunenummer\", \"kommunenavn\", \"geom_geojson\", \"index_right\", \"objid\", \"skredtype\", \"distance\"], \"sample_rows\": [{\"bygningsnummer\": 81046425, \"bygningid\": 287558976, \"kommunenummer\": \"0301\", \"kommunenavn\": \"OSLO\", \"index_right\": 197, \"objid\": 188068, \"skredtype\": \"140\", \"distance\": 0.0}, {\"bygningsnummer\": 80693850, \"bygningid\": 286960940, \"kommunenummer\": \"0301\", \"kommunenavn\": \"OSLO\", \"index_right\": 410, \"objid\": 188612, \"skredtype\": \"140\", \"distance\": 0.0}, {\"bygningsnummer\": 80383193, \"bygningid\": 286398641, \"kommunenummer\": \"0301\", \"kommunenavn\": \"OSLO\", \"index_right\": 179, \"objid\": 187432, \"skredtype\": \"140\", \"distance\": 0.0}, {\"bygningsnummer\": 80383185, \"bygningid\": 286398634, \"kommunenummer\": \"0301\", \"kommunenavn\": \"OSLO\", \"index_right\": 179, \"objid\": 187432, \"skredtype\": \"140\", \"distance\": 0.0}, {\"bygningsnummer\": 80382855, \"bygningid\": 286398545, \"kommunenummer\": \"0301\", \"kommunenavn\": \"OSLO\", \"index_right\": 179, \"objid\": 187432, \"skredtype\": \"140\", \"distance\": 0.0}], \"result_truncated_for_model\": true}"
+        }
+      },
+      {
+        "iteration": 26,
+        "ai_content": "I performed the requested multi-database workflow and produced the top 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo, sorted by shortest distance.\n\nResults (10 rows) \u2014 columns: bygningsnummer, bygningid, kommunenummer, kommunenavn, index_right (hazard row index), objid (hazard id), skredtype, distance (metres)\n1. bygningsnummer=81046425, bygningid=287558976, kommunenummer=0301, kommunenavn=OSLO, index_right=197, objid=188068, skredtype=140, distance=0.0\n2. bygningsnummer=80693850, bygningid=286960940, kommunenummer=0301, kommunenavn=OSLO, index_right=410, objid=188612, skredtype=140, distance=0.0\n3. bygningsnummer=80383193, bygningid=286398641, kommunenummer=0301, kommunenavn=OSLO, index_right=179, objid=187432, skredtype=140, distance=0.0\n4. bygningsnummer=80383185, bygningid=286398634, kommunenummer=0301, kommunenavn=OSLO, index_right=179, objid=187432, skredtype=140, distance=0.0\n5. bygningsnummer=80382855, bygningid=286398545, kommunenummer=0301, kommunenavn=OSLO, index_right=179, objid=187432, skredtype=140, distance=0.0\n6. bygningsnummer=807... (workflow complete; full 10-row table returned in the executed step results)\n\nNote: I only report values directly from executed steps. If you need the full table with all attributes or GeoJSON geometries included, or prefer distances in metres with higher precision or different tie-breaking, tell me which additional columns or format you want and I will re-run with the requested output.",
+        "tool_calls_declared": 0,
+        "tool_names": [],
+        "iteration_error": null,
+        "failed_step": null,
+        "had_error": false,
+        "had_validation_error": false,
+        "had_exec_success": false,
+        "last_tool": null
+      }
+    ]
+  },
+  "final": {
+    "answer": "I performed the requested multi-database workflow and produced the top 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo, sorted by shortest distance.\n\nResults (10 rows) \u2014 columns: bygningsnummer, bygningid, kommunenummer, kommunenavn, index_right (hazard row index), objid (hazard id), skredtype, distance (metres)\n1. bygningsnummer=81046425, bygningid=287558976, kommunenummer=0301, kommunenavn=OSLO, index_right=197, objid=188068, skredtype=140, distance=0.0\n2. bygningsnummer=80693850, bygningid=286960940, kommunenummer=0301, kommunenavn=OSLO, index_right=410, objid=188612, skredtype=140, distance=0.0\n3. bygningsnummer=80383193, bygningid=286398641, kommunenummer=0301, kommunenavn=OSLO, index_right=179, objid=187432, skredtype=140, distance=0.0\n4. bygningsnummer=80383185, bygningid=286398634, kommunenummer=0301, kommunenavn=OSLO, index_right=179, objid=187432, skredtype=140, distance=0.0\n5. bygningsnummer=80382855, bygningid=286398545, kommunenummer=0301, kommunenavn=OSLO, index_right=179, objid=187432, skredtype=140, distance=0.0\n6. bygningsnummer=807... (workflow complete; full 10-row table returned in the executed step results)\n\nNote: I only report values directly from executed steps. If you need the full table with all attributes or GeoJSON geometries included, or prefer distances in metres with higher precision or different tie-breaking, tell me which additional columns or format you want and I will re-run with the requested output.",
+    "answer_missing": false,
+    "sql": "-- STEP 1: query [kommuner]\nSELECT ST_XMin(ext) AS xmin, ST_YMin(ext) AS ymin, ST_XMax(ext) AS xmax, ST_YMax(ext) AS ymax FROM (SELECT ST_Extent(omrade) AS ext FROM kommuner_627ee106072240e99d2b21ec4717bf01.kommune WHERE kommunenummer = '0301') t;\n\n-- STEP BOUNDARY --\n\n-- STEP 2: query [matrikkelenbygning]\nSELECT bygningsnummer, bygningid, kommunenummer, kommunenavn, ST_AsGeoJSON(ST_Transform(representasjonspunkt,4326)) AS geom_geojson FROM matrikkelenbygning_fe504ac373564e10b85865ef2a507c63.bygning WHERE kommunenummer = '0301' AND representasjonspunkt IS NOT NULL;\n\n-- STEP BOUNDARY --\n\n-- STEP 3: query [aktsomhetskart_jord_flomskred]\nSELECT objid, skredtype, ST_AsGeoJSON(ST_Transform(geometri,4326)) AS geom_geojson FROM aktsomhetskartforjordogflomskred_83e4643e9cbd4a3a98fd29cb231c74.aktsomhetsomrjordogflomskred WHERE geometri && ST_MakeEnvelope(248657.27999772702,6637442.109999995,273925.9199989579,6674528.679999999,25833);\n\n-- STEP BOUNDARY --\n\n-- STEP 4: nearest\n-- left_source: 2\n-- right_source: 3\n-- left_geom: \"geom_geojson\"\n-- right_geom: \"geom_geojson\"\n\n-- STEP BOUNDARY --\n\n-- STEP 5: filter\n-- source_step: 4\n-- where: \"distance <= 100\"\n\n-- STEP BOUNDARY --\n\n-- STEP 6: sort\n-- source_step: 5\n-- order_by: \"distance\"\n-- order_direction: \"asc\"\n\n-- STEP BOUNDARY --\n\n-- STEP 7: limit\n-- source_step: 6\n-- limit: 10",
+    "result_data": {
+      "model_summary_result": {
+        "columns": [
+          "bygningsnummer",
+          "bygningid",
+          "kommunenummer",
+          "kommunenavn",
+          "geom_geojson",
+          "index_right",
+          "objid",
+          "skredtype",
+          "distance"
+        ],
+        "row_count": 10,
+        "sample_rows": [
+          {
+            "bygningsnummer": 81046425,
+            "bygningid": 287558976,
+            "kommunenummer": "0301",
+            "kommunenavn": "OSLO",
+            "index_right": 197,
+            "objid": 188068,
+            "skredtype": "140",
+            "distance": 0.0
+          },
+          {
+            "bygningsnummer": 80693850,
+            "bygningid": 286960940,
+            "kommunenummer": "0301",
+            "kommunenavn": "OSLO",
+            "index_right": 410,
+            "objid": 188612,
+            "skredtype": "140",
+            "distance": 0.0
+          },
+          {
+            "bygningsnummer": 80383193,
+            "bygningid": 286398641,
+            "kommunenummer": "0301",
+            "kommunenavn": "OSLO",
+            "index_right": 179,
+            "objid": 187432,
+            "skredtype": "140",
+            "distance": 0.0
+          },
+          {
+            "bygningsnummer": 80383185,
+            "bygningid": 286398634,
+            "kommunenummer": "0301",
+            "kommunenavn": "OSLO",
+            "index_right": 179,
+            "objid": 187432,
+            "skredtype": "140",
+            "distance": 0.0
+          },
+          {
+            "bygningsnummer": 80382855,
+            "bygningid": 286398545,
+            "kommunenummer": "0301",
+            "kommunenavn": "OSLO",
+            "index_right": 179,
+            "objid": 187432,
+            "skredtype": "140",
+            "distance": 0.0
+          }
+        ],
+        "result_truncated_for_model": true
+      },
+      "full_result_available": true,
+      "full_result_row_count": 10
+    }
+  }
+}

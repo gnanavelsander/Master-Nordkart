@@ -1,0 +1,57 @@
+{
+  "run_id": "3c6b5300f9d64917a344b58aff04c91a",
+  "query_id": "B35",
+  "query": "Provide a municipality-level overview of buildings located in quick-clay hazard areas in Tr\u00f8ndelag county.",
+  "timestamp": "2026-04-23T03:39:42Z",
+  "prompt_name": "evaluation_v1",
+  "params": {
+    "temperature": 0.0,
+    "max_tokens": 2000,
+    "timeout": 300,
+    "max_retries": 0,
+    "tool_choice": "auto",
+    "max_iterations": 30,
+    "max_sql_repairs": 2,
+    "max_step_retries": 1,
+    "max_replans": 1,
+    "max_plan_steps": 8,
+    "top_p": null,
+    "reasoning_effort": null
+  },
+  "model_ids": [
+    "gpt-5-mini"
+  ],
+  "summary": [
+    {
+      "model_id": "gpt-5-mini",
+      "status": "completed",
+      "valid_sql": true,
+      "executed": true,
+      "steps_executed": {
+        "1": true,
+        "2": true,
+        "3": true,
+        "4": true,
+        "5": true,
+        "6": true,
+        "7": true,
+        "8": true
+      },
+      "task_completed": true,
+      "iterations": 26,
+      "total_tool_calls": 25,
+      "latency_s": 362.651,
+      "total_tokens": 176588,
+      "retrieval_scope_active": false,
+      "retrieval_top_score": null,
+      "full_result_row_count": 25,
+      "sql_repairs": 1,
+      "step_retries": 0,
+      "replans": 0,
+      "blocked_calls": 2,
+      "total_step_errors": 4,
+      "redundant_steps": 0,
+      "error": "4 errors (step 1: 1, step 4: 2, step 8: 1)"
+    }
+  ]
+}
