@@ -19,7 +19,7 @@ from config import (
 )
 
 from agent_models import AgentState, ModelParams, AgentRunError
-from agent_helpers import (
+from backend.evaluation.prompts.agent_helpers import (
     _add_tokens,
     _answer_indicates_incomplete_task,
     _build_snapshot,
@@ -443,10 +443,6 @@ def _replan_node(state: AgentState) -> AgentState:
     ]
     steps_block = "\n".join(step_lines) if step_lines else "  (none)"
 
-    # blocked_step / zero_rows_step → append replan message to conversation history
-    # unplanned_step / timeout_step → replace conversation (fresh context)
-    soft_retry = replan_reason in ("blocked_step", "zero_rows_step")
-
     if replan_reason == "unplanned_step":
         replan_msg = f"""Replan: incomplete plan — step {blocked_step} was needed but not in the original plan.
 
@@ -489,13 +485,12 @@ Produce a new complete plan with fresh step numbering starting from 1. Options: 
         if replan_reason == "unplanned_step" else None
     )
 
-    if soft_retry:
-        new_msgs = list(state.get("msgs", [])) + [HumanMessage(content=replan_msg)]
-    else:
-        new_msgs = [
-            SystemMessage(content=state["prompt"]),
-            HumanMessage(content=replan_msg),
-        ]
+    # Always reset to a fresh conversation on replan. Appending a HumanMessage
+    # after prior tool output can produce invalid message ordering for some APIs.
+    new_msgs = [
+        SystemMessage(content=state["prompt"]),
+        HumanMessage(content=replan_msg),
+    ]
 
     shared_reset = {
         "msgs": new_msgs,

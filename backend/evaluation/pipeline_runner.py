@@ -26,7 +26,7 @@ from agent_models import (
     TokenUsage,
     AgentRunError,
 )
-from agent_helpers import (
+from backend.evaluation.prompts.agent_helpers import (
     _accumulate_retry_snapshots,
     _build_snapshot,
     _dedup,
@@ -53,7 +53,7 @@ from config import EMBEDDINGS_MIN_SCORE, EMBEDDINGS_TOP_K, EMBEDDINGS_TABLE_INDE
 
 
 
-from agent_helpers import load_prompt
+from backend.evaluation.prompts.agent_helpers import load_prompt
 
 
 _MAX_RETRY_DELAY_S = 120
@@ -557,23 +557,24 @@ async def main():
         # "B23": "Find 10 parcels in Bergen municipality that contain storm-surge polygons, sorted by teigid ascending.",
         # "B24": "Count all buildings located in built-up and transport areas in Oslo municipality.",
 
-        "B25": "Count all buildings in flood hazard areas in Kristiansand municipality.",
-        "B26": "Find 10 parcels located in quick-clay hazard areas with high risk class in Trondheim municipality, sorted by teigid ascending.",
-        "B27": "Find 10 buildings in Drammen municipality that intersect the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
-        "B28": "Find 10 buildings in Kristiansand municipality that are located both in flood hazard areas and on agricultural land, sorted by bygningid ascending.",
-        "B29": "Find 10 buildings in Oslo municipality that are exposed to both flood hazard areas and soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
-        "B30": "Find 10 buildings in Stavanger municipality that are located on agricultural land and within soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
-        "B31": "Find 10 parcels in Trondheim municipality that are located in both flood hazard areas and quick-clay hazard areas, sorted by teigid ascending.",
-        "B32": "Find 10 buildings in Bergen municipality that are exposed to both storm-surge areas and flood hazard areas, sorted by bygningid ascending.",
+        # "B25": "Count all buildings in flood hazard areas in Kristiansand municipality.",
+        # "B26": "Find 10 parcels located in quick-clay hazard areas with high risk class in Trondheim municipality, sorted by teigid ascending.",
+        # "B27": "Find 10 buildings in Drammen municipality that intersect the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
+        # "B28": "Find 10 buildings in Kristiansand municipality that are located both in flood hazard areas and on agricultural land, sorted by bygningid ascending.",
+        # "B29": "Find 10 buildings in Oslo municipality that are exposed to both flood hazard areas and soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
+        # "B30": "Find 10 buildings in Stavanger municipality that are located on agricultural land and within soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
+        # "B31": "Find 10 parcels in Trondheim municipality that are located in both flood hazard areas and quick-clay hazard areas, sorted by teigid ascending.",
+        # "B32": "Find 10 buildings in Bergen municipality that are exposed to both storm-surge areas and flood hazard areas, sorted by bygningid ascending.",
 
-    #     "B33": "Find 10 buildings in Bergen municipality that are located in storm-surge areas, sorted by bygningid ascending, and report both municipality and county.",
-    #     "B34": "List the five municipalities in Vestland county with the highest number of buildings in flood hazard areas, sorted by count descending.",
-    #     "B35": "Provide a municipality-level overview of buildings located in quick-clay hazard areas in Trøndelag county.",
-    #     "B36": "Provide a municipality-level comparison of buildings exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas in Agder county.",
-    #     "B37": "Find 10 buildings in Trondheim municipality that are exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas at the same time, sorted by bygningid ascending.",
-    #     "B38": "Find 10 buildings in Bergen municipality that are contained in both storm-surge areas and the 200-year flood zone, sorted by bygningid ascending.",
-    #     "B39": "Find 10 buildings in Innlandet county that are located both in forest areas and in flood hazard areas, sorted by bygningid ascending.",
-    #     "B40": "List the 5 municipalities in Rogaland county with the highest number of parcels exposed to both flood hazard areas and storm-surge areas, sorted by parcel count descending.",
+        # "B33": "Find 10 buildings in Bergen municipality that are located in storm-surge areas, sorted by bygningid ascending, and report both municipality and county.",
+        # "B34": "List the five municipalities in Vestland county with the highest number of buildings in flood hazard areas, sorted by count descending.",
+        # "B35": "Provide a municipality-level overview of buildings located in quick-clay hazard areas in Trøndelag county.",
+        
+        # "B36": "Provide a municipality-level comparison of buildings exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas in Agder county.",
+        # "B37": "Find 10 buildings in Trondheim municipality that are exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas at the same time, sorted by bygningid ascending.",
+         "B38": "Find 10 buildings in Bergen municipality that are contained in both storm-surge areas and the 200-year flood zone, sorted by bygningid ascending.",
+        # "B39": "Find 10 buildings in Innlandet county that are located both in forest areas and in flood hazard areas, sorted by bygningid ascending.",
+        # "B40": "List the 5 municipalities in Rogaland county with the highest number of parcels exposed to both flood hazard areas and storm-surge areas, sorted by parcel count descending.",
     }
     
     model_ids = ["gpt-5-mini"]
@@ -585,8 +586,8 @@ async def main():
         max_retries=0,
         max_iterations=30,
         max_sql_repairs=2,
-        max_step_retries=1,
-        max_replans=1,
+        max_step_retries=2,
+        max_replans=2,
     )
 
     prompt_name = "evaluation_v1"

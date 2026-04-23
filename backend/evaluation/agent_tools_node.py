@@ -20,7 +20,7 @@ EXECUTE_TIMEOUT_S = int(os.getenv("EXECUTE_TIMEOUT_S", "300"))
 
 
 from agent_models import AgentState
-from agent_helpers import (
+from backend.evaluation.prompts.agent_helpers import (
     _coerce_args,
     _dedup,
     _extract_databases_from_result,

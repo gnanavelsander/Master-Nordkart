@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from agent_models import EvalRun, PipelineResult, AgentTrace, AgentRunError
-from agent_helpers import (
+from backend.evaluation.prompts.agent_helpers import (
     _active_plan_logs,
     _active_plan_run,
     _fallback_answer_from_logs,
