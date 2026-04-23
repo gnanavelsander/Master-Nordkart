@@ -12,19 +12,15 @@ sys.path.insert(0, str(ROOT))
 from agent_models import EvalRun, PipelineResult, AgentTrace, AgentRunError
 from backend.evaluation.prompts.agent_helpers import (
     _active_plan_logs,
-    _active_plan_run,
-    _fallback_answer_from_logs,
     _build_step_outcomes,
     _collect_active_step_stats,
     _dedup,
     _empty_token_dict,
-    _executed_from_steps,
     _step_execution_map,
     _format_step_execution,
     _parse_tool_result,
+    _run_outcome_from_logs,
     _short,
-    _task_completed_from_steps,
-    _valid_sql_from_steps,
     load_prompt,
 )
 from backend.storage.AzureBlobStorage import (
@@ -64,28 +60,6 @@ def _extract_result_contract_info(result_data: dict | None) -> dict:
         "full_result_row_count": full_result_row_count,
     }
 
-
-def _last_executed_result_from_run_logs(run_logs: list | None) -> dict | None:
-    latest: dict | None = None
-
-    for run in run_logs or []:
-        for entry in run.get("iterations", []) or []:
-            for tool in entry.get("tools", []) or []:
-                parsed = _parse_tool_result(tool.get("result"))
-                if isinstance(parsed, dict) and parsed.get("executed", False):
-                    latest = parsed
-
-    return latest
-
-
-def _last_final_sql_from_run_logs(run_logs: list | None) -> str | None:
-    for run in reversed(run_logs or []):
-        sql = (run.get("final_sql") or "").strip()
-        if sql:
-            return sql
-    return None
-
-
 def _extract_retrieval_info(run_logs: list | None, fallback: dict | None = None) -> dict:
     retrieval = dict(fallback or {})
     logs = run_logs or []
@@ -102,23 +76,25 @@ def _extract_retrieval_info(run_logs: list | None, fallback: dict | None = None)
     }
 
 
-def _extract_plan_info(run_logs: list | None, fallback: dict | None = None) -> dict:
-    plan = dict(fallback or {})
-    source = _active_plan_run(run_logs)
-    if source:
-        if "plan_finalized" in source:
-            plan = {
-                "plan_finalized": source.get("plan_finalized", False),
-                "planned_steps": source.get("planned_steps", {}),
-                "required_step_ids": source.get("required_step_ids", []),
-            }
+def _sanitize_reporting_run_logs(run_logs: list | None) -> list[dict]:
+    sanitized: list[dict] = []
 
-    return {
-        "plan_finalized": bool(plan.get("plan_finalized", False)),
-        "planned_steps": dict(plan.get("planned_steps", {})),
-        "required_step_ids": list(plan.get("required_step_ids", [])),
-    }
+    for run in run_logs or []:
+        if not isinstance(run, dict):
+            continue
+        clean = dict(run)
+        clean.pop("attempt_number", None)
+        clean.pop("attempt_tokens", None)
+        clean.pop("status", None)
+        sanitized.append(clean)
 
+    return sanitized
+
+
+def _sanitize_result_doc(doc: dict) -> dict:
+    clean = dict(doc)
+    clean.pop("status", None)
+    return clean
 
 def _sorted_step_items(step_registry: dict) -> list[tuple]:
     return sorted(
@@ -756,18 +732,8 @@ def _print_details(results: list):
             logger.info(f"\n{RED}  RUN LOGS:{RESET}")
             for run in r.run_logs:
                 logger.info(f"  {CYAN}Run {run.get('run_index', 0)}:{RESET}")
-                logger.info("      attempt         : %s", run.get("attempt_number", 0))
                 logger.info("      sql_repairs     : %s", run.get("sql_repairs_used", 0))
                 logger.info("      final_sql       : %s", _short(str(run.get("final_sql") or "(none)"), 300))
-
-                atk = run.get("attempt_tokens")
-                if atk:
-                    logger.info(
-                        "      tokens          : in=%s out=%s total=%s",
-                        atk.get("prompt_tokens", 0),
-                        atk.get("completion_tokens", 0),
-                        atk.get("total_tokens", 0),
-                    )
 
                 if run.get("validation_error"):
                     logger.info("      validation_error: %s", run["validation_error"])
@@ -928,13 +894,15 @@ async def store_run(run: EvalRun, results: list) -> str:
                 run_logs,
                 fallback=snap.get("retrieval"),
             )
-            plan = _extract_plan_info(
+            outcome = _run_outcome_from_logs(
                 run_logs,
-                fallback={
-                    "plan_finalized": snap.get("plan_finalized", False),
-                    "planned_steps": snap.get("planned_steps", {}),
-                    "required_step_ids": snap.get("required_step_ids", []),
-                },
+                valid_sql_fallback=snap.get("valid_sql", False),
+                executed_fallback=snap.get("executed", False),
+                task_completed_fallback=snap.get("task_completed", False),
+                plan_finalized=snap.get("plan_finalized", False),
+                planned_steps=snap.get("planned_steps", {}),
+                required_step_ids=snap.get("required_step_ids", []),
+                final_sql_fallback=snap.get("final_sql"),
             )
             trace = _extract_agent_trace_from_run_logs(
                 run_logs,
@@ -944,22 +912,9 @@ async def store_run(run: EvalRun, results: list) -> str:
             failed_summary = _failed_step_summary(run_logs)
             active_step_issues, recovered_step_issues = _step_issue_summaries(run_logs)
             step_outcomes = _build_step_outcomes(run_logs)
-            valid_sql = _valid_sql_from_steps(
-                run_logs,
-                valid_sql_fallback=snap.get("valid_sql", trace.validated_before_exec),
-            )
-            executed = _executed_from_steps(
-                run_logs,
-                executed_fallback=snap.get("executed", trace.executed_successfully),
-            )
-            task_completed = _task_completed_from_steps(
-                run_logs,
-                task_completed_fallback=snap.get("task_completed", False),
-                final_answer=_fallback_answer_from_logs(run_logs),
-                required_step_ids=set(plan["required_step_ids"]),
-                plan_finalized=plan["plan_finalized"],
-                planned_steps=plan["planned_steps"],
-            )
+            valid_sql = outcome["valid_sql"]
+            executed = outcome["executed"]
+            task_completed = outcome["task_completed"]
             active_errors = _dedup(
                 _combine_active_errors(active_step_issues, snap.get("all_errors", []), recovered_step_issues)
                 + _step_status_errors(run_logs)
@@ -969,15 +924,12 @@ async def store_run(run: EvalRun, results: list) -> str:
                 active_errors,
             )
             metrics = _summary_metrics(run_logs, trace)
-            effective_result_data = _last_executed_result_from_run_logs(run_logs)
-            effective_final_sql = snap.get("final_sql") or _last_final_sql_from_run_logs(run_logs)
-            result_contract = _extract_result_contract_info(effective_result_data)
+            result_contract = _extract_result_contract_info(outcome["result_data"])
 
             doc = {
                 "run_id": run_id,
                 "query": run.query,
                 "model_id": snap.get("model_id"),
-                "status": "error",
                 "error": str(r),
                 "valid_sql": valid_sql,
                 "executed": executed,
@@ -988,9 +940,9 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "latency_s": None,
                 "tokens": tokens,
                 "retrieval": retrieval,
-                "plan_finalized": plan["plan_finalized"],
-                "planned_steps": plan["planned_steps"],
-                "required_step_ids": plan["required_step_ids"],
+                "plan_finalized": outcome["plan_finalized"],
+                "planned_steps": outcome["planned_steps"],
+                "required_step_ids": outcome["required_step_ids"],
                 "result": result_contract,
                 "guard_stats": metrics["guard_stats"],
                 "process": {
@@ -1009,7 +961,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "terminal_context": terminal_context,
                 "final": {
                     "answer": None,
-                    "sql": effective_final_sql,
+                    "sql": outcome["final_sql"],
                     "result_data": result_contract,
                 },
             }
@@ -1017,10 +969,9 @@ async def store_run(run: EvalRun, results: list) -> str:
             summary.append(
                 {
                     "model_id": doc["model_id"],
-                    "status": "error",
                     "valid_sql": valid_sql,
                     "executed": executed,
-                    "steps_executed": _step_execution_map(snap.get("run_logs", [])),
+                    "steps_executed": _step_execution_map(run_logs),
                     "task_completed": task_completed,
                     "iterations": doc["iterations"],
                     "total_tool_calls": trace.total_tool_calls,
@@ -1043,39 +994,29 @@ async def store_run(run: EvalRun, results: list) -> str:
             run_logs = r.run_logs or []
             tokens = asdict(r.tokens) if r.tokens else _empty_token_dict()
             retrieval = _extract_retrieval_info(run_logs)
-            plan = _extract_plan_info(run_logs)
+            outcome = _run_outcome_from_logs(
+                run_logs,
+                final_answer=r.final_answer,
+                valid_sql_fallback=r.valid_sql,
+                executed_fallback=r.executed,
+                task_completed_fallback=r.task_completed,
+                final_sql_fallback=r.final_sql,
+                result_data_fallback=r.result_data,
+            )
             failed_summary = _failed_step_summary(run_logs)
             active_step_issues, recovered_step_issues = _step_issue_summaries(run_logs)
             metrics = _summary_metrics(run_logs, trace)
             active_errors = _active_errors_for_result(r)
             step_outcomes = _build_step_outcomes(run_logs)
-            valid_sql = _valid_sql_from_steps(
-                run_logs,
-                valid_sql_fallback=r.valid_sql,
-            )
-            executed = _executed_from_steps(
-                run_logs,
-                executed_fallback=r.executed,
-            )
-            task_completed = _task_completed_from_steps(
-                run_logs,
-                task_completed_fallback=r.task_completed,
-                final_answer=(r.final_answer or _fallback_answer_from_logs(run_logs)),
-                required_step_ids=set(plan["required_step_ids"]),
-                plan_finalized=plan["plan_finalized"],
-                planned_steps=plan["planned_steps"],
-            )
-            status = "completed" if task_completed else "incomplete"
+            valid_sql = outcome["valid_sql"]
+            executed = outcome["executed"]
             terminal_context = _build_terminal_context(run_logs, active_errors)
-            effective_result_data = r.result_data or _last_executed_result_from_run_logs(run_logs)
-            effective_final_sql = r.final_sql or _last_final_sql_from_run_logs(run_logs)
-            result_contract = _extract_result_contract_info(effective_result_data)
+            result_contract = _extract_result_contract_info(outcome["result_data"])
 
             doc = {
                 "run_id": run_id,
                 "query": run.query,
                 "model_id": r.model_id,
-                "status": status,
                 "valid_sql": valid_sql,
                 "executed": executed,
                 "task_completed": task_completed,
@@ -1085,9 +1026,9 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "latency_s": r.latency_s,
                 "tokens": tokens,
                 "retrieval": retrieval,
-                "plan_finalized": plan["plan_finalized"],
-                "planned_steps": plan["planned_steps"],
-                "required_step_ids": plan["required_step_ids"],
+                "plan_finalized": outcome["plan_finalized"],
+                "planned_steps": outcome["planned_steps"],
+                "required_step_ids": outcome["required_step_ids"],
                 "result": result_contract,
                 "guard_stats": metrics["guard_stats"],
                 "process": {
@@ -1106,7 +1047,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "final": {
                     "answer": r.final_answer,
                     "answer_missing": not bool(r.final_answer),
-                    "sql": effective_final_sql,
+                    "sql": outcome["final_sql"],
                     "result_data": result_contract,
                 },
                 "run_logs": run_logs,
@@ -1115,7 +1056,6 @@ async def store_run(run: EvalRun, results: list) -> str:
             summary.append(
                 {
                     "model_id": r.model_id,
-                    "status": status,
                     "valid_sql": valid_sql,
                     "executed": executed,
                     "steps_executed": _step_execution_map(r.run_logs or []),
@@ -1174,10 +1114,11 @@ async def store_run(run: EvalRun, results: list) -> str:
         seen_ids.add(key)
 
         run_logs = doc.pop("run_logs", [])
-        result_doc = doc
+        result_doc = _sanitize_result_doc(doc)
+        reporting_run_logs = _sanitize_reporting_run_logs(run_logs)
 
         await _upload(f"{base}/{key}/result.json", result_doc)
-        await _upload(f"{base}/{key}/logs.json", run_logs)
+        await _upload(f"{base}/{key}/logs.json", reporting_run_logs)
 
     logger.info("SAVED: %s/", base)
     return f"{q_hash}/{run_id}"

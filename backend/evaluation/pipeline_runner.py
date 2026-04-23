@@ -32,11 +32,9 @@ from backend.evaluation.prompts.agent_helpers import (
     _dedup,
     _dedup_logs,
     _empty_token_dict,
-    _executed_from_steps,
     _is_rate_limit_error,
     _render_final_sql,
-    _task_completed_from_steps,
-    _valid_sql_from_steps,
+    _run_outcome_from_logs,
 )
 from agent_graph import get_agent_graph
 from reporting import extract_agent_trace, _print_summary, _print_details, store_run
@@ -62,6 +60,7 @@ _MAX_RETRY_DELAY_S = 120
 
 
 logger = logging.getLogger(__name__)
+_PIPELINE_429_RETRIES_ENABLED = False
 
 
 async def _expand_result_for_frontend(result_data: dict | None) -> dict | None:
@@ -239,23 +238,35 @@ async def agent(
 
     state = init_state
     expanded_result_data: dict | None = None
-    task_completed = False
+    run_outcome: dict | None = None
     try:
         state = await get_agent_graph().ainvoke(init_state)
-        task_completed = _task_completed_from_steps(
-            state.get("all_run_logs", []),
+        steps = dict(state.get("step_registry", {}))
+        run_logs = state.get("all_run_logs", [])
+        final_sql = _render_final_sql(
+            steps,
+            state.get("last_validated_sql"),
+            state.get("last_sql"),
+        )
+        run_outcome = _run_outcome_from_logs(
+            run_logs,
             task_completed_fallback=state.get("task_completed", False),
             final_answer=state.get("answer"),
-            required_step_ids=set(state.get("required_step_ids", set())),
+            valid_sql_fallback=state.get("valid_sql", False),
+            executed_fallback=any(s.get("executed", False) for s in steps.values()),
             plan_finalized=state.get("plan_finalized", False),
             planned_steps=dict(state.get("planned_steps", {})),
+            required_step_ids=set(state.get("required_step_ids", set())),
+            original_required_step_ids=set(state.get("original_required_step_ids", set())),
+            final_sql_fallback=final_sql,
+            result_data_fallback=state.get("last_executed_result"),
         )
         # Expand the last executed result BEFORE cleanup_run deletes the step data.
         # _expand_result_for_frontend fetches full rows via get_step_result, which
         # would return an error after cleanup_run runs — so this must happen here.
-        if task_completed:
+        if run_outcome["task_completed"]:
             expanded_result_data = await _expand_result_for_frontend(
-                state.get("last_executed_result")
+                run_outcome["result_data"]
             )
     except Exception as e:
         if isinstance(e, AgentRunError):
@@ -272,49 +283,28 @@ async def agent(
                 cleanup_err,
             )
 
+    if run_outcome is None:
+        raise AgentRunError("Agent run finished without a derived outcome.", snapshot=_build_snapshot(state))
 
     total_tokens = TokenUsage(
         prompt_tokens=state["grand_total_tokens"]["prompt_tokens"],
         completion_tokens=state["grand_total_tokens"]["completion_tokens"],
         total_tokens=state["grand_total_tokens"]["total_tokens"],
     )
-
-    steps = dict(state.get("step_registry", {}))
     run_logs = state.get("all_run_logs", [])
-    executed = _executed_from_steps(
-        run_logs,
-        executed_fallback=any(s.get("executed", False) for s in steps.values()),
-    )
-    valid_sql = _valid_sql_from_steps(
-        run_logs,
-        valid_sql_fallback=state.get("valid_sql", False),
-    )
-    task_completed = _task_completed_from_steps(
-        run_logs,
-        task_completed_fallback=task_completed or state.get("task_completed", False),
-        final_answer=state.get("answer"),
-        required_step_ids=set(state.get("required_step_ids", set())),
-        plan_finalized=state.get("plan_finalized", False),
-        planned_steps=dict(state.get("planned_steps", {})),
-    )
-    final_sql = _render_final_sql(
-        steps,
-        state.get("last_validated_sql"),
-        state.get("last_sql"),
-    )
 
     return AgentResult(
         answer=state["answer"],
-        sql=final_sql,
-        result_data=expanded_result_data,
-        executed=executed,
-        valid_sql=valid_sql,
+        sql=run_outcome["final_sql"],
+        result_data=expanded_result_data or run_outcome["result_data"],
+        executed=run_outcome["executed"],
+        valid_sql=run_outcome["valid_sql"],
         sql_repairs_used=state.get("total_sql_repairs", 0),
         restarts_used=state.get("restart_count", 0),
         logs=run_logs,
         all_errors=state.get("all_errors", []),
         tokens=total_tokens,
-        task_completed=task_completed,
+        task_completed=run_outcome["task_completed"],
         answer_based_on_result=state.get("answer_based_on_result", False),
         iterations=state.get("total_iterations", 0),
     )
@@ -381,6 +371,7 @@ async def _run_one_with_retry(
     history_context: str | None = None,
 ) -> PipelineResult | AgentRunError:
     async with sem:
+        effective_retries = retries if _PIPELINE_429_RETRIES_ENABLED else 0
         delay = 30
         accumulated_snapshot: dict = {
             "model_id": model_id,
@@ -412,7 +403,7 @@ async def _run_one_with_retry(
         prior_iterations = 0
         prior_run_logs: list = []
 
-        for attempt in range(retries + 1):
+        for attempt in range(effective_retries + 1):
             try:
                 result = await pipeline(
                     model_id=model_id,
@@ -445,7 +436,7 @@ async def _run_one_with_retry(
                     accumulated_snapshot, current_snapshot
                 )
 
-                if _is_rate_limit_error(e) and attempt < retries:
+                if _is_rate_limit_error(e) and attempt < effective_retries:
                     # Save cost data from this failed attempt before retrying
                     snap_tokens = current_snapshot.get("tokens") or _empty_token_dict()
                     prior_tokens = {
@@ -461,7 +452,7 @@ async def _run_one_with_retry(
                     )
                     logger.warning(
                         "[RETRY][%s] 429 detected — sleeping %ss (attempt %s/%s)...",
-                        model_id, delay, attempt + 1, retries + 1,
+                        model_id, delay, attempt + 1, effective_retries + 1,
                     )
                     await asyncio.sleep(delay)
                     delay = min(delay * 2, _MAX_RETRY_DELAY_S)

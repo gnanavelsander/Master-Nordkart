@@ -535,6 +535,101 @@ def _fallback_answer_from_logs(run_logs: list | None, current_run_log: list | No
     return candidates[-1] if candidates else ""
 
 
+def _plan_info_from_run_logs(run_logs: list | None, fallback: dict | None = None) -> dict:
+    plan = dict(fallback or {})
+    source = _active_plan_run(run_logs)
+    if isinstance(source, dict) and "plan_finalized" in source:
+        plan = {
+            "plan_finalized": source.get("plan_finalized", False),
+            "planned_steps": source.get("planned_steps", {}),
+            "required_step_ids": source.get("required_step_ids", []),
+        }
+
+    return {
+        "plan_finalized": bool(plan.get("plan_finalized", False)),
+        "planned_steps": _normalize_step_mapping(plan.get("planned_steps", {})),
+        "required_step_ids": sorted(
+            _normalize_step_key(step_id)
+            for step_id in set(plan.get("required_step_ids", []))
+        ),
+    }
+
+
+def _last_executed_result_from_run_logs(run_logs: list | None) -> dict | None:
+    latest: dict | None = None
+
+    for run in run_logs or []:
+        for entry in run.get("iterations", []) or []:
+            for tool in entry.get("tools", []) or []:
+                parsed = _parse_tool_result(tool.get("result"))
+                if isinstance(parsed, dict) and parsed.get("executed", False):
+                    latest = parsed
+
+    return latest
+
+
+def _last_final_sql_from_run_logs(run_logs: list | None) -> str | None:
+    for run in reversed(run_logs or []):
+        sql = (run.get("final_sql") or "").strip()
+        if sql:
+            return sql
+    return None
+
+
+def _run_outcome_from_logs(
+    run_logs: list | None,
+    *,
+    final_answer: str | None = None,
+    valid_sql_fallback: bool = False,
+    executed_fallback: bool = False,
+    task_completed_fallback: bool = False,
+    plan_finalized: bool = False,
+    planned_steps: dict | None = None,
+    required_step_ids: set | list | None = None,
+    original_required_step_ids: set | list | None = None,
+    final_sql_fallback: str | None = None,
+    result_data_fallback: dict | None = None,
+) -> dict:
+    plan = _plan_info_from_run_logs(
+        run_logs,
+        fallback={
+            "plan_finalized": plan_finalized,
+            "planned_steps": planned_steps or {},
+            "required_step_ids": required_step_ids or [],
+        },
+    )
+    answer = (final_answer or "").strip() or _fallback_answer_from_logs(run_logs)
+    valid_sql = _valid_sql_from_steps(
+        run_logs,
+        valid_sql_fallback=valid_sql_fallback,
+    )
+    executed = _executed_from_steps(
+        run_logs,
+        executed_fallback=executed_fallback,
+    )
+    task_completed = _task_completed_from_steps(
+        run_logs,
+        task_completed_fallback=task_completed_fallback,
+        final_answer=answer,
+        required_step_ids=set(plan["required_step_ids"]),
+        plan_finalized=plan["plan_finalized"],
+        planned_steps=plan["planned_steps"],
+        original_required_step_ids=original_required_step_ids,
+    )
+
+    return {
+        "plan_finalized": plan["plan_finalized"],
+        "planned_steps": plan["planned_steps"],
+        "required_step_ids": plan["required_step_ids"],
+        "final_answer": answer,
+        "valid_sql": valid_sql,
+        "executed": executed,
+        "task_completed": task_completed,
+        "result_data": result_data_fallback or _last_executed_result_from_run_logs(run_logs),
+        "final_sql": final_sql_fallback or _last_final_sql_from_run_logs(run_logs),
+    }
+
+
 
 
 
@@ -621,48 +716,40 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
         current = _run_log_entry_from_state(state)
         if not any(_log_entry_key(r) == _log_entry_key(current) for r in run_logs):
             run_logs.append(current)
+    run_logs = _dedup_logs(run_logs)
 
-    valid_sql = _valid_sql_from_steps(
-        run_logs,
-        valid_sql_fallback=state.get("valid_sql", False),
-    )
-    executed = _executed_from_steps(
-        run_logs,
-        executed_fallback=state.get("last_execute_ok", False),
-    )
-    task_completed = _task_completed_from_steps(
-        run_logs,
-        task_completed_fallback=state.get("task_completed", False),
-        final_answer=state.get("answer") or _fallback_answer_from_logs(run_logs),
-        required_step_ids=set(state.get("required_step_ids", set())),
-        plan_finalized=state.get("plan_finalized", False),
-        planned_steps=dict(state.get("planned_steps", {})),
-        original_required_step_ids=set(state.get("original_required_step_ids", set())),
-    )
-
-    steps = state.get("step_registry", {})
     final_sql = _render_final_sql(
-        steps,
+        state.get("step_registry", {}),
         state.get("last_validated_sql"),
         state.get("last_sql"),
+    )
+    outcome = _run_outcome_from_logs(
+        run_logs,
+        final_answer=state.get("answer") or _fallback_answer_from_logs(run_logs),
+        valid_sql_fallback=state.get("valid_sql", False),
+        executed_fallback=state.get("last_execute_ok", False),
+        task_completed_fallback=state.get("task_completed", False),
+        plan_finalized=state.get("plan_finalized", False),
+        planned_steps=dict(state.get("planned_steps", {})),
+        required_step_ids=set(state.get("required_step_ids", set())),
+        original_required_step_ids=set(state.get("original_required_step_ids", set())),
+        final_sql_fallback=final_sql,
+        result_data_fallback=state.get("last_executed_result"),
     )
 
     return {
         "model_id": state.get("model_id"),
-        "plan_finalized": state.get("plan_finalized", False),
-        "planned_steps": _normalize_step_mapping(state.get("planned_steps", {})),
-        "required_step_ids": sorted(
-            _normalize_step_key(step_id)
-            for step_id in set(state.get("required_step_ids", set()))
-        ),
+        "plan_finalized": outcome["plan_finalized"],
+        "planned_steps": outcome["planned_steps"],
+        "required_step_ids": outcome["required_step_ids"],
         "retrieval": {
             "scope_active": state.get("retrieval_scope_active", False),
             "top_score": state.get("retrieval_top_score"),
             "candidates": list(state.get("retrieval_candidates", [])),
         },
-        "valid_sql": valid_sql,
-        "executed": executed,
-        "task_completed": task_completed,
+        "valid_sql": outcome["valid_sql"],
+        "executed": outcome["executed"],
+        "task_completed": outcome["task_completed"],
         "answer_based_on_result": state.get("answer_based_on_result", False),
         "iterations": state.get("total_iterations", 0),
         "restart_count": state.get("restart_count", 0),
@@ -672,8 +759,8 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
         "total_tool_calls": state.get("total_tool_calls", 0),
         "tokens": dict(state.get("grand_total_tokens", _empty_token_dict())),
         "all_errors": _dedup(errors),
-        "final_sql": final_sql,
-        "run_logs": _dedup_logs(run_logs),
+        "final_sql": outcome["final_sql"],
+        "run_logs": run_logs,
         "discovered_databases": list(state.get("discovered_databases", [])),
         "discovered_tables": list(state.get("discovered_tables", [])),
         "last_validation_error": state.get("last_validation_error"),

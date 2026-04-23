@@ -38,6 +38,7 @@ from agent_tools_node import _tools_node, _get_tools
 
 
 logger = logging.getLogger(__name__)
+_PROVIDER_RETRIES_ENABLED = False
 
 
 
@@ -59,6 +60,7 @@ _AGENT_GRAPH = None
 
 def get_model(model_id: str, tools, params: ModelParams):
     dep = AZURE_MODEL_DEPLOYMENT.get(model_id)
+    provider_max_retries = params.max_retries if _PROVIDER_RETRIES_ENABLED else 0
 
     model_kwargs = {}
     if params.top_p is not None:
@@ -77,7 +79,7 @@ def get_model(model_id: str, tools, params: ModelParams):
             temperature=params.temperature,
             max_tokens=params.max_tokens,
             timeout=params.timeout,
-            max_retries=params.max_retries,
+            max_retries=provider_max_retries,
             model_kwargs=model_kwargs,
         ).bind_tools(tools, tool_choice=params.tool_choice)
 
@@ -90,7 +92,7 @@ def get_model(model_id: str, tools, params: ModelParams):
             base_url=AZURE_FOUNDRY_ENDPOINT,
             temperature=params.temperature,
             timeout=params.timeout,
-            max_retries=params.max_retries,
+            max_retries=provider_max_retries,
             model_kwargs=model_kwargs,
         ).bind_tools(tools, tool_choice=params.tool_choice)
 
