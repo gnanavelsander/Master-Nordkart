@@ -25,6 +25,7 @@ from backend.evaluation.prompts.agent_helpers import (
     _build_snapshot,
     _dedup,
     _empty_token_dict,
+    _estimate_exchange_tokens,
     _executed_from_steps,
     _extract_plan_from_text,
     _extract_tokens,
@@ -56,6 +57,36 @@ _AGENT_GRAPH = None
 
 
 
+
+
+def _runtime_info_from_ai(model_id: str, dep: str | None, ai) -> dict:
+    response_meta = dict(getattr(ai, "response_metadata", {}) or {})
+    provider = response_meta.get("model_provider")
+    if not provider:
+        if model_id in AZURE_OPENAI_MODEL_IDS:
+            provider = "azure_openai"
+        elif model_id in AZURE_FOUNDRY_MODEL_IDS:
+            provider = "azure_foundry"
+        elif model_id in OLLAMA_MODEL_IDS:
+            provider = "ollama"
+        else:
+            provider = "unknown"
+
+    runtime_model_name = (
+        response_meta.get("model_name")
+        or response_meta.get("model")
+        or dep
+        or model_id
+    )
+    finish_reason = response_meta.get("finish_reason") or response_meta.get("done_reason")
+
+    return {
+        "provider": provider,
+        "model_id": model_id,
+        "deployment": dep,
+        "runtime_model_name": runtime_model_name,
+        "finish_reason": finish_reason,
+    }
 
 
 def get_model(model_id: str, tools, params: ModelParams):
@@ -111,7 +142,9 @@ def get_model(model_id: str, tools, params: ModelParams):
 
 async def _model_node(state: AgentState) -> AgentState:
     tools = _get_tools()
-    model = get_model(state["model_id"], tools, state["params"])
+    model_id = state["model_id"]
+    dep = AZURE_MODEL_DEPLOYMENT.get(model_id)
+    model = get_model(model_id, tools, state["params"])
 
     # logger.debug(
     #     "\n"
@@ -185,10 +218,20 @@ async def _model_node(state: AgentState) -> AgentState:
     # )
 
     iter_tokens = _extract_tokens(ai)
+    estimated_iter_tokens = _estimate_exchange_tokens(state["msgs"], ai)
     attempt_tokens = dict(state["attempt_tokens"])
     grand_total = dict(state["grand_total_tokens"])
+    estimated_attempt_tokens = dict(
+        state.get("estimated_attempt_tokens", _empty_token_dict())
+    )
+    estimated_grand_total = dict(
+        state.get("estimated_grand_total_tokens", _empty_token_dict())
+    )
     _add_tokens(attempt_tokens, iter_tokens)
     _add_tokens(grand_total, iter_tokens)
+    _add_tokens(estimated_attempt_tokens, estimated_iter_tokens)
+    _add_tokens(estimated_grand_total, estimated_iter_tokens)
+    runtime_info = _runtime_info_from_ai(model_id, dep, ai)
 
     msgs = list(state["msgs"])
     msgs.append(ai)
@@ -197,8 +240,12 @@ async def _model_node(state: AgentState) -> AgentState:
     state["msgs"] = msgs
     state["attempt_tokens"] = attempt_tokens
     state["grand_total_tokens"] = grand_total
+    state["estimated_attempt_tokens"] = estimated_attempt_tokens
+    state["estimated_grand_total_tokens"] = estimated_grand_total
     state["current_ai"] = ai
     state["current_iter_tokens"] = asdict(iter_tokens)
+    state["estimated_current_iter_tokens"] = asdict(estimated_iter_tokens)
+    state["last_model_runtime"] = runtime_info
     state["total_iterations"] = state.get("total_iterations", 0) + 1
     state["current_ai_is_final_answer"] = not bool(ai.tool_calls)
 
@@ -260,7 +307,9 @@ async def _model_node(state: AgentState) -> AgentState:
     run_log.append({
         "iteration": state["iterations"],
         "tokens": dict(state["current_iter_tokens"]),
+        "estimated_tokens": dict(state["estimated_current_iter_tokens"]),
         "ai_content": (ai.content or "").strip(),
+        "llm": runtime_info,
 
 
 

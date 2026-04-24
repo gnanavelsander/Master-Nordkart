@@ -25,6 +25,7 @@ from backend.evaluation.prompts.agent_helpers import (
 )
 from backend.storage.AzureBlobStorage import (
     upload,
+    config_hash,
     query_hash,
     query_meta_exists,
     prompt_meta_exists,
@@ -76,6 +77,33 @@ def _extract_retrieval_info(run_logs: list | None, fallback: dict | None = None)
     }
 
 
+def _extract_model_runtime_info(run_logs: list | None, fallback_model_id: str | None = None) -> dict:
+    runtime: dict = {}
+
+    for run in reversed(run_logs or []):
+        if isinstance(run, dict):
+            run_level = run.get("model_runtime")
+            if isinstance(run_level, dict) and run_level:
+                runtime = dict(run_level)
+                break
+
+            for entry in reversed(run.get("iterations") or []):
+                llm = entry.get("llm")
+                if isinstance(llm, dict) and llm:
+                    runtime = dict(llm)
+                    break
+            if runtime:
+                break
+
+    return {
+        "provider": runtime.get("provider"),
+        "model_id": fallback_model_id or runtime.get("model_id"),
+        "deployment": runtime.get("deployment"),
+        "runtime_model_name": runtime.get("runtime_model_name"),
+        "finish_reason": runtime.get("finish_reason"),
+    }
+
+
 def _sanitize_reporting_run_logs(run_logs: list | None) -> list[dict]:
     sanitized: list[dict] = []
 
@@ -85,6 +113,7 @@ def _sanitize_reporting_run_logs(run_logs: list | None) -> list[dict]:
         clean = dict(run)
         clean.pop("attempt_number", None)
         clean.pop("attempt_tokens", None)
+        clean.pop("estimated_attempt_tokens", None)
         clean.pop("status", None)
         sanitized.append(clean)
 
@@ -855,6 +884,12 @@ def _print_details(results: list):
 async def store_run(run: EvalRun, results: list) -> str:
     q_hash = query_hash(run.query)
     run_id = uuid.uuid4().hex
+    config_payload = {
+        "prompt_name": run.prompt_name,
+        "params": asdict(run.params),
+    }
+    config_id = config_hash(config_payload)
+    config_path = f"{STORAGE_VERSION}/configs/{config_id}.json"
 
 
     base = f"{STORAGE_VERSION}/{q_hash}/{run.prompt_name}/runs/{run_id}"
@@ -882,6 +917,11 @@ async def store_run(run: EvalRun, results: list) -> str:
             load_prompt(run.prompt_name),
         )
 
+    await _upload(
+        config_path,
+        config_payload,
+    )
+
     summary = []
     normalized_docs = []
 
@@ -890,6 +930,8 @@ async def store_run(run: EvalRun, results: list) -> str:
             snap = r.snapshot or {}
             run_logs = snap.get("run_logs", [])
             tokens = snap.get("tokens", _empty_token_dict())
+            estimated_tokens = snap.get("estimated_tokens", _empty_token_dict())
+            model_runtime = _extract_model_runtime_info(run_logs, snap.get("model_id"))
             retrieval = _extract_retrieval_info(
                 run_logs,
                 fallback=snap.get("retrieval"),
@@ -925,11 +967,24 @@ async def store_run(run: EvalRun, results: list) -> str:
             )
             metrics = _summary_metrics(run_logs, trace)
             result_contract = _extract_result_contract_info(outcome["result_data"])
+            published_result_contract = result_contract if task_completed else None
+            published_row_count = (
+                published_result_contract["full_result_row_count"]
+                if published_result_contract is not None
+                else None
+            )
 
             doc = {
                 "run_id": run_id,
                 "query": run.query,
                 "model_id": snap.get("model_id"),
+                "provider": model_runtime["provider"],
+                "deployment": model_runtime["deployment"],
+                "runtime_model_name": model_runtime["runtime_model_name"],
+                "finish_reason": model_runtime["finish_reason"],
+                "prompt_name": run.prompt_name,
+                "config_id": config_id,
+                "config_path": config_path,
                 "error": str(r),
                 "valid_sql": valid_sql,
                 "executed": executed,
@@ -939,11 +994,12 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "total_tool_calls": trace.total_tool_calls,
                 "latency_s": None,
                 "tokens": tokens,
+                "estimated_tokens": estimated_tokens,
                 "retrieval": retrieval,
                 "plan_finalized": outcome["plan_finalized"],
                 "planned_steps": outcome["planned_steps"],
                 "required_step_ids": outcome["required_step_ids"],
-                "result": result_contract,
+                "result": published_result_contract,
                 "guard_stats": metrics["guard_stats"],
                 "process": {
                     "total_step_errors": metrics["total_step_errors"],
@@ -962,7 +1018,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "final": {
                     "answer": None,
                     "sql": outcome["final_sql"],
-                    "result_data": result_contract,
+                    "result_data": published_result_contract,
                 },
             }
 
@@ -977,9 +1033,10 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "total_tool_calls": trace.total_tool_calls,
                     "latency_s": None,
                     "total_tokens": tokens.get("total_tokens"),
+                    "estimated_total_tokens": estimated_tokens.get("total_tokens"),
                     "retrieval_scope_active": retrieval["scope_active"],
                     "retrieval_top_score": retrieval["top_score"],
-                    "full_result_row_count": result_contract["full_result_row_count"],
+                    "full_result_row_count": published_row_count,
                     "sql_repairs": metrics["guard_stats"]["sql_repairs"]["total"],
                     "step_retries": metrics["guard_stats"]["step_retries"]["total"],
                     "replans": metrics["guard_stats"]["replans"],
@@ -993,6 +1050,10 @@ async def store_run(run: EvalRun, results: list) -> str:
             trace = extract_agent_trace(r)
             run_logs = r.run_logs or []
             tokens = asdict(r.tokens) if r.tokens else _empty_token_dict()
+            estimated_tokens = (
+                asdict(r.estimated_tokens) if r.estimated_tokens else _empty_token_dict()
+            )
+            model_runtime = _extract_model_runtime_info(run_logs, r.model_id)
             retrieval = _extract_retrieval_info(run_logs)
             outcome = _run_outcome_from_logs(
                 run_logs,
@@ -1010,13 +1071,27 @@ async def store_run(run: EvalRun, results: list) -> str:
             step_outcomes = _build_step_outcomes(run_logs)
             valid_sql = outcome["valid_sql"]
             executed = outcome["executed"]
+            task_completed = outcome["task_completed"]
             terminal_context = _build_terminal_context(run_logs, active_errors)
             result_contract = _extract_result_contract_info(outcome["result_data"])
+            published_result_contract = result_contract if task_completed else None
+            published_row_count = (
+                published_result_contract["full_result_row_count"]
+                if published_result_contract is not None
+                else None
+            )
 
             doc = {
                 "run_id": run_id,
                 "query": run.query,
                 "model_id": r.model_id,
+                "provider": model_runtime["provider"],
+                "deployment": model_runtime["deployment"],
+                "runtime_model_name": model_runtime["runtime_model_name"],
+                "finish_reason": model_runtime["finish_reason"],
+                "prompt_name": run.prompt_name,
+                "config_id": config_id,
+                "config_path": config_path,
                 "valid_sql": valid_sql,
                 "executed": executed,
                 "task_completed": task_completed,
@@ -1025,11 +1100,12 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "total_tool_calls": trace.total_tool_calls,
                 "latency_s": r.latency_s,
                 "tokens": tokens,
+                "estimated_tokens": estimated_tokens,
                 "retrieval": retrieval,
                 "plan_finalized": outcome["plan_finalized"],
                 "planned_steps": outcome["planned_steps"],
                 "required_step_ids": outcome["required_step_ids"],
-                "result": result_contract,
+                "result": published_result_contract,
                 "guard_stats": metrics["guard_stats"],
                 "process": {
                     "total_step_errors": metrics["total_step_errors"],
@@ -1048,7 +1124,7 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "answer": r.final_answer,
                     "answer_missing": not bool(r.final_answer),
                     "sql": outcome["final_sql"],
-                    "result_data": result_contract,
+                    "result_data": published_result_contract,
                 },
                 "run_logs": run_logs,
             }
@@ -1064,9 +1140,10 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "total_tool_calls": trace.total_tool_calls,
                     "latency_s": r.latency_s,
                     "total_tokens": tokens.get("total_tokens"),
+                    "estimated_total_tokens": estimated_tokens.get("total_tokens"),
                     "retrieval_scope_active": retrieval["scope_active"],
                     "retrieval_top_score": retrieval["top_score"],
-                    "full_result_row_count": result_contract["full_result_row_count"],
+                    "full_result_row_count": published_row_count,
                     "sql_repairs": metrics["guard_stats"]["sql_repairs"]["total"],
                     "step_retries": metrics["guard_stats"]["step_retries"]["total"],
                     "replans": metrics["guard_stats"]["replans"],
@@ -1079,29 +1156,33 @@ async def store_run(run: EvalRun, results: list) -> str:
 
         normalized_docs.append(doc)
 
-    await _upload(
-        f"{base}/run_summary.json",
-        {
-            "run_id": run_id,
-            "query_id": run.query_id,
-            "query": run.query,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "prompt_name": run.prompt_name,
-            "params": asdict(run.params),
-            "model_ids": run.model_ids,
-            "summary": summary,
-        },
-    )
+    # run_summary.json is intentionally disabled.
+    # logs.json is the raw truth source, and result.json is the per-run
+    # derived artifact we want to keep for analysis.
+    #
+    # await _upload(
+    #     f"{base}/run_summary.json",
+    #     {
+    #         "run_id": run_id,
+    #         "query_id": run.query_id,
+    #         "query": run.query,
+    #         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    #         "prompt_name": run.prompt_name,
+    #         "params": asdict(run.params),
+    #         "model_ids": run.model_ids,
+    #         "summary": summary,
+    #     },
+    # )
 
     embedding_active = any(s.get("retrieval_scope_active") for s in summary)
 
     try:
-        _update_queries_index(q_hash, run.query, summary, run.prompt_name, run.query_id)
+        _update_queries_index(q_hash, run.query, summary, run.prompt_name, config_id, run.query_id)
     except Exception as e:
         logger.warning("Failed to update queries index: %s", e)
 
     try:
-        _update_runs_index(q_hash, run_id, summary, run.prompt_name, embedding_active)
+        _update_runs_index(q_hash, run_id, summary, run.prompt_name, config_id, embedding_active)
     except Exception as e:
         logger.warning("Failed to update runs index: %s", e)
 

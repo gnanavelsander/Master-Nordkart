@@ -60,6 +60,7 @@ class AgentResult:
     all_errors: list[str]
 
     tokens: TokenUsage | None = None
+    estimated_tokens: TokenUsage | None = None
 
     task_completed: bool = False
     answer_based_on_result: bool = False
@@ -80,6 +81,7 @@ class PipelineResult:
     all_errors: list[str]
     params: ModelParams
     tokens: TokenUsage | None = None
+    estimated_tokens: TokenUsage | None = None
     run_logs: list | None = None
     task_completed: bool = False
     answer_based_on_result: bool = False
@@ -130,6 +132,9 @@ class AgentState(TypedDict, total=False):
     attempt_tokens: dict
     grand_total_tokens: dict
     current_iter_tokens: dict
+    estimated_attempt_tokens: dict
+    estimated_grand_total_tokens: dict
+    estimated_current_iter_tokens: dict
  
     last_sql: Optional[str]
     last_validated_sql: Optional[str]
@@ -146,6 +151,7 @@ class AgentState(TypedDict, total=False):
  
     current_ai: Any
     current_ai_is_final_answer: bool
+    last_model_runtime: dict
     valid_sql: bool
     answer: str
     all_errors: list[str]

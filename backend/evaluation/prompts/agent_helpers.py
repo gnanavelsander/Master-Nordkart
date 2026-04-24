@@ -8,11 +8,18 @@ from langchain_core.messages import HumanMessage
 
 from agent_models import TokenUsage, AgentState
 
+try:
+    import tiktoken
+except ImportError:  # pragma: no cover - optional dependency fallback
+    tiktoken = None
+
 
 
 import logging
 
 logger = logging.getLogger(__name__)
+_ESTIMATED_TOKENS_ENCODING_NAME = "o200k_base"
+_ESTIMATED_TOKENS_ENCODING = None
 
 
 _PLAN_ACTIONS = (
@@ -37,14 +44,19 @@ _PLAN_ACTIONS = (
 )
 
 
+# def load_prompt(name: str) -> str:
+#     path = Path(__file__).parent / "prompts" / f"{name}.txt"
+#     if not path.exists():
+#         raise ValueError(f"Prompt not found: {path}")
+#     return path.read_text(encoding="utf-8")
+
+
+
 def load_prompt(name: str) -> str:
-    path = Path(__file__).parent / "prompts" / f"{name}.txt"
+    path = Path(__file__).parent / f"{name}.txt"
     if not path.exists():
         raise ValueError(f"Prompt not found: {path}")
     return path.read_text(encoding="utf-8")
-
-
-
 
 
 
@@ -87,6 +99,68 @@ def _extract_tokens(ai) -> TokenUsage:
     ct = getattr(usage, "output_tokens", 0)
     tt = getattr(usage, "total_tokens", 0) or (pt + ct)
     return TokenUsage(prompt_tokens=pt, completion_tokens=ct, total_tokens=tt)
+
+
+def _estimate_text_tokens(text: str) -> int:
+    if not text:
+        return 0
+
+    global _ESTIMATED_TOKENS_ENCODING
+    if tiktoken is not None:
+        try:
+            if _ESTIMATED_TOKENS_ENCODING is None:
+                _ESTIMATED_TOKENS_ENCODING = tiktoken.get_encoding(
+                    _ESTIMATED_TOKENS_ENCODING_NAME
+                )
+            return len(_ESTIMATED_TOKENS_ENCODING.encode(text))
+        except Exception:
+            pass
+
+    return len(re.findall(r"\S+", text))
+
+
+def _json_for_token_estimate(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _serialize_message_for_token_estimate(msg: Any) -> str:
+    payload = {
+        "type": getattr(msg, "type", msg.__class__.__name__),
+        "name": getattr(msg, "name", None),
+        "tool_call_id": getattr(msg, "tool_call_id", None),
+        "content": getattr(msg, "content", None),
+        "tool_calls": getattr(msg, "tool_calls", None),
+        "invalid_tool_calls": getattr(msg, "invalid_tool_calls", None),
+        "additional_kwargs": getattr(msg, "additional_kwargs", None),
+    }
+    return _json_for_token_estimate(payload)
+
+
+def _estimate_messages_tokens(messages: list[Any] | None) -> int:
+    total = 0
+    for msg in messages or []:
+        total += _estimate_text_tokens(_serialize_message_for_token_estimate(msg))
+    return total
+
+
+def _estimate_ai_tokens(ai: Any) -> int:
+    payload = {
+        "content": getattr(ai, "content", None),
+        "tool_calls": getattr(ai, "tool_calls", None),
+        "invalid_tool_calls": getattr(ai, "invalid_tool_calls", None),
+        "additional_kwargs": getattr(ai, "additional_kwargs", None),
+    }
+    return _estimate_text_tokens(_json_for_token_estimate(payload))
+
+
+def _estimate_exchange_tokens(messages: list[Any] | None, ai: Any) -> TokenUsage:
+    prompt_tokens = _estimate_messages_tokens(messages)
+    completion_tokens = _estimate_ai_tokens(ai)
+    return TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+    )
 
 
 def _parse_tool_result(raw: Any) -> Any:
@@ -649,6 +723,7 @@ def _run_log_entry_from_state(state: "AgentState") -> dict:
     return {
         "attempt_number": state.get("attempt_number", 0),
         "run_index": state.get("restart_count", 0),
+        "model_runtime": dict(state.get("last_model_runtime", {})),
         "plan_finalized": state.get("plan_finalized", False),
         "planned_steps": _normalize_step_mapping(state.get("planned_steps", {})),
         "required_step_ids": sorted(
@@ -682,6 +757,9 @@ def _run_log_entry_from_state(state: "AgentState") -> dict:
         "discovered_tables": list(state.get("discovered_tables", [])),
         "discovered_databases": list(state.get("discovered_databases", [])),
         "attempt_tokens": dict(state.get("attempt_tokens", _empty_token_dict())),
+        "estimated_attempt_tokens": dict(
+            state.get("estimated_attempt_tokens", _empty_token_dict())
+        ),
         "step_registry": normalized_step_registry,
     }
 
@@ -758,6 +836,9 @@ def _build_snapshot(state: "AgentState", extra_error: str | None = None) -> dict
         ),
         "total_tool_calls": state.get("total_tool_calls", 0),
         "tokens": dict(state.get("grand_total_tokens", _empty_token_dict())),
+        "estimated_tokens": dict(
+            state.get("estimated_grand_total_tokens", _empty_token_dict())
+        ),
         "all_errors": _dedup(errors),
         "final_sql": outcome["final_sql"],
         "run_logs": run_logs,
@@ -791,6 +872,13 @@ def _accumulate_retry_snapshots(base: dict | None, new: dict | None) -> dict:
         "prompt_tokens":     bt["prompt_tokens"]     + nt["prompt_tokens"],
         "completion_tokens": bt["completion_tokens"] + nt["completion_tokens"],
         "total_tokens":      bt["total_tokens"]      + nt["total_tokens"],
+    }
+    bet = dict(base.get("estimated_tokens", _empty_token_dict()))
+    net = dict(new.get("estimated_tokens", _empty_token_dict()))
+    merged["estimated_tokens"] = {
+        "prompt_tokens":     bet["prompt_tokens"]     + net["prompt_tokens"],
+        "completion_tokens": bet["completion_tokens"] + net["completion_tokens"],
+        "total_tokens":      bet["total_tokens"]      + net["total_tokens"],
     }
 
     merged["all_errors"] = _dedup(

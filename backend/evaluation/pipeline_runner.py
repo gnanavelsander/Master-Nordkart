@@ -182,6 +182,10 @@ async def agent(
         "all_run_logs": [],
         "attempt_tokens": _empty_token_dict(),
         "grand_total_tokens": _empty_token_dict(),
+        "current_iter_tokens": _empty_token_dict(),
+        "estimated_attempt_tokens": _empty_token_dict(),
+        "estimated_grand_total_tokens": _empty_token_dict(),
+        "estimated_current_iter_tokens": _empty_token_dict(),
         "last_sql": None,
         "last_validated_sql": None,
         "last_validation_ok": False,
@@ -291,6 +295,11 @@ async def agent(
         completion_tokens=state["grand_total_tokens"]["completion_tokens"],
         total_tokens=state["grand_total_tokens"]["total_tokens"],
     )
+    estimated_total_tokens = TokenUsage(
+        prompt_tokens=state["estimated_grand_total_tokens"]["prompt_tokens"],
+        completion_tokens=state["estimated_grand_total_tokens"]["completion_tokens"],
+        total_tokens=state["estimated_grand_total_tokens"]["total_tokens"],
+    )
     run_logs = state.get("all_run_logs", [])
 
     return AgentResult(
@@ -304,6 +313,7 @@ async def agent(
         logs=run_logs,
         all_errors=state.get("all_errors", []),
         tokens=total_tokens,
+        estimated_tokens=estimated_total_tokens,
         task_completed=run_outcome["task_completed"],
         answer_based_on_result=state.get("answer_based_on_result", False),
         iterations=state.get("total_iterations", 0),
@@ -351,6 +361,7 @@ async def pipeline(
         all_errors=_dedup(result.all_errors),
         params=params,
         tokens=result.tokens,
+        estimated_tokens=result.estimated_tokens,
         run_logs=result.logs,
         task_completed=result.task_completed,
         answer_based_on_result=result.answer_based_on_result,
@@ -380,6 +391,7 @@ async def _run_one_with_retry(
             "sql_repairs_used": 0,
             "total_tool_calls": 0,
             "tokens": _empty_token_dict(),
+            "estimated_tokens": _empty_token_dict(),
             "all_errors": [],
             "final_sql": None,
             "run_logs": [],
@@ -400,6 +412,7 @@ async def _run_one_with_retry(
         }
 
         prior_tokens = _empty_token_dict()
+        prior_estimated_tokens = _empty_token_dict()
         prior_iterations = 0
         prior_run_logs: list = []
 
@@ -422,6 +435,12 @@ async def _run_one_with_retry(
                             completion_tokens=result.tokens.completion_tokens + prior_tokens["completion_tokens"],
                             total_tokens=result.tokens.total_tokens + prior_tokens["total_tokens"],
                         )
+                    if result.estimated_tokens:
+                        result.estimated_tokens = TokenUsage(
+                            prompt_tokens=result.estimated_tokens.prompt_tokens + prior_estimated_tokens["prompt_tokens"],
+                            completion_tokens=result.estimated_tokens.completion_tokens + prior_estimated_tokens["completion_tokens"],
+                            total_tokens=result.estimated_tokens.total_tokens + prior_estimated_tokens["total_tokens"],
+                        )
                     result.iterations += prior_iterations
                     if prior_run_logs and result.run_logs is not None:
                         result.run_logs = prior_run_logs + result.run_logs
@@ -441,6 +460,11 @@ async def _run_one_with_retry(
                     snap_tokens = current_snapshot.get("tokens") or _empty_token_dict()
                     prior_tokens = {
                         k: prior_tokens[k] + snap_tokens.get(k, 0)
+                        for k in ("prompt_tokens", "completion_tokens", "total_tokens")
+                    }
+                    snap_estimated_tokens = current_snapshot.get("estimated_tokens") or _empty_token_dict()
+                    prior_estimated_tokens = {
+                        k: prior_estimated_tokens[k] + snap_estimated_tokens.get(k, 0)
                         for k in ("prompt_tokens", "completion_tokens", "total_tokens")
                     }
                     prior_iterations += current_snapshot.get("iterations", 0)
@@ -520,51 +544,50 @@ async def main():
     logger.setLevel(logging.DEBUG)
 
     queries = {
-        # "B1":  "Count all buildings in Kristiansand municipality.",
-        #"B2":  "Find 10 disputed parcels in Bergen municipality, sorted by teigid ascending.",
-        # "B3":  "Find 10 buildings with status FA in Stavanger municipality, sorted by bygningid ascending.",
-        # "B4":  "Find 10 parcels larger than 5000 m² in Oslo municipality, sorted by lagretberegnetareal descending.",
-        # "B5":  "Find the building closest to the centroid of Bergen municipality.",
-        # "B6":  "Count all parcels in flood hazard areas in Oslo municipality.",
-        # "B7":  "Count all buildings in quick-clay hazard areas in Trondheim municipality.",
-        # "B8":  "Count all buildings in snow-avalanche hazard areas in Narvik municipality.",
+        #"B1": "Count all buildings in Kristiansand municipality.",
+        "B2": "Find 10 parcels in Kristiansand municipality, sorted by teigid ascending.",
+        "B3": "Find 10 buildings with status FA in Stavanger municipality, sorted by bygningid ascending.",
+        "B4": "Find 10 parcels larger than 5000 m² in Drammen municipality, sorted by lagretberegnetareal descending.",
+        "B5": "Find 10 buildings in Narvik municipality, sorted by bygningid ascending.",
+        "B6": "Count all parcels in Stavanger municipality.",
+        "B7": "Count all disputed parcels in Kristiansand municipality.",
+        "B8": "Count all buildings with status FA in Kristiansand municipality.",
 
-        # "B9":  "Find 10 garage buildings in Bergen municipality, sorted by bygningid ascending.",
-        # "B10": "Find 10 buildings located in forest areas in Trondheim municipality, sorted by bygningid ascending.",
-        # "B11": "Find 10 parcels located in agricultural land in Stavanger municipality, sorted by teigid ascending.",
-        # "B12": "Find 10 buildings located in built-up and transport areas in Oslo municipality, sorted by bygningid ascending.",
-        # "B13": "Find 10 buildings located in flood hazard areas in Bergen municipality, sorted by bygningid ascending.",
-        # "B14": "Find 10 buildings located in soil- and flood-landslide hazard areas in Stavanger municipality, sorted by bygningid ascending.",
-        # "B15": "Find 10 buildings located in quick-clay hazard areas in Trondheim municipality, sorted by bygningid ascending.",
-        # "B16": "Count all buildings located in forest areas in Bergen municipality.",
+        "B9": "Count all buildings in Narvik municipality that intersect snow-avalanche hazard areas.",
+        "B10": "Find 10 parcels in Stavanger municipality that are located in agricultural land, sorted by teigid ascending.",
+        "B11": "Count all buildings in Drammen municipality that intersect 200-year flood zones.",
+        "B12": "Find 10 parcels in Drammen municipality that intersect 200-year flood zones, sorted by teigid ascending.",
+        "B13": "Count all buildings in Kristiansand municipality that intersect 200-year storm-surge areas.",
+        "B14": "Find 10 parcels in Kristiansand municipality that intersect 200-year storm-surge areas, sorted by teigid ascending.",
+        "B15": "Count all buildings in Trondheim municipality that intersect quick-clay hazard areas.",
+        "B16": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas, sorted by teigid ascending.",
 
-        # "B17": "Find 10 buildings located in snow-avalanche hazard areas in Narvik municipality, sorted by bygningid ascending.",
-        # "B18": "Find 10 parcels that touch flood zones in Drammen municipality, sorted by teigid ascending.",
-        # "B19": "Find 10 parcels within 100 metres of flood hazard areas in Kristiansand municipality, sorted by shortest distance first.",
-        "B20": "Find 10 buildings within 100 metres of soil- and flood-landslide hazard areas in Oslo municipality, sorted by shortest distance first.",
-        "B21": "Find 10 parcels within 100 metres of quick-clay hazard areas in Trondheim municipality, sorted by shortest distance first.",
-        "B22": "Find 10 buildings that intersect a 100 metre buffer around flood hazard areas in Oslo municipality, sorted by bygningid ascending.",
-        "B23": "Find 10 parcels in Bergen municipality that contain storm-surge polygons, sorted by teigid ascending.",
-        "B24": "Count all buildings located in built-up and transport areas in Oslo municipality.",
+        # "B17": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and have status FA, sorted by bygningid ascending.",
+        # "B18": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones, sorted by lagretberegnetareal descending.",
+        # "B19": "Find 10 buildings in Kristiansand municipality that intersect 200-year storm-surge areas and report both municipality and county.",
+        # "B20": "Find 10 parcels in Kristiansand municipality that intersect 200-year storm-surge areas and report both municipality and county.",
+        # "B21": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by bygningid ascending.",
+        # "B22": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by teigid ascending.",
+        # "B23": "Count all 1 km grid cells in Kristiansand municipality that intersect 200-year storm-surge areas.",
+        # "B24": "Find 10 buildings in Kristiansand municipality within 50 metres of 200-year storm-surge areas, sorted by shortest distance first, and report both municipality and county.",
 
-        "B25": "Count all buildings in flood hazard areas in Kristiansand municipality.",
-        "B26": "Find 10 parcels located in quick-clay hazard areas with high risk class in Trondheim municipality, sorted by teigid ascending.",
-        "B27": "Find 10 buildings in Drammen municipality that intersect the intersection of flood hazard areas and the 200-year flood zone, sorted by bygningid ascending.",
-        "B28": "Find 10 buildings in Kristiansand municipality that are located both in flood hazard areas and on agricultural land, sorted by bygningid ascending.",
-        "B29": "Find 10 buildings in Oslo municipality that are exposed to both flood hazard areas and soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
-        "B30": "Find 10 buildings in Stavanger municipality that are located on agricultural land and within soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
-        "B31": "Find 10 parcels in Trondheim municipality that are located in both flood hazard areas and quick-clay hazard areas, sorted by teigid ascending.",
-        "B32": "Find 10 buildings in Bergen municipality that are exposed to both storm-surge areas and flood hazard areas, sorted by bygningid ascending.",
+        # "B25": "Find 10 buildings in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by bygningid ascending.",
+        # "B26": "Find 10 parcels in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by teigid ascending.",
+        # "B27": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and are within 50 metres of the municipal boundary, sorted by shortest distance first.",
+        # "B28": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones and are within 50 metres of the municipal boundary, sorted by lagretberegnetareal descending.",
+        # "B29": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class and are closest to the municipality centroid, sorted by shortest distance first.",
+        # "B30": "Find 10 parcels in Trondheim municipality larger than 5000 m² that intersect quick-clay hazard areas with high risk class, sorted by lagretberegnetareal descending, and report both municipality and county.",
+        # "B31": "Find 10 buildings in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, and report both municipality and county.",
+        # "B32": "Find 10 1 km grid cells in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by ssbid1000m ascending.",
 
-        "B33": "Find 10 buildings in Bergen municipality that are located in storm-surge areas, sorted by bygningid ascending, and report both municipality and county.",
-        "B34": "List the five municipalities in Vestland county with the highest number of buildings in flood hazard areas, sorted by count descending.",
-        "B35": "Provide a municipality-level overview of buildings located in quick-clay hazard areas in Trøndelag county.",
-        
-        # "B36": "Provide a municipality-level comparison of buildings exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas in Agder county.",
-        # "B37": "Find 10 buildings in Trondheim municipality that are exposed to flood hazard areas, quick-clay hazard areas, and soil- and flood-landslide hazard areas at the same time, sorted by bygningid ascending.",
-         "B38": "Find 10 buildings in Bergen municipality that are contained in both storm-surge areas and the 200-year flood zone, sorted by bygningid ascending.",
-        # "B39": "Find 10 buildings in Innlandet county that are located both in forest areas and in flood hazard areas, sorted by bygningid ascending.",
-        # "B40": "List the 5 municipalities in Rogaland county with the highest number of parcels exposed to both flood hazard areas and storm-surge areas, sorted by parcel count descending.",
+        # "B33": "Provide a 1 km grid-cell overview of buildings in Lillestrøm municipality located in quick-clay hazard areas.",
+        # "B34": "List the five 1 km grid cells in Lillestrøm municipality with the highest number of parcels located in quick-clay hazard areas, sorted by parcel count descending.",
+        # "B35": "List the five municipalities in Agder county with the highest number of buildings in 200-year storm-surge areas, sorted by count descending.",
+        # "B36": "Provide a 1 km grid-cell overview of buildings located in 200-year flood zones in Drammen municipality, and report the municipality number and county name.",
+        # "B37": "List the five municipalities in Buskerud county with the highest number of buildings in 200-year flood zones, sorted by count descending.",
+        # "B38": "Provide a municipality-level overview of parcels located in 200-year flood zones in Buskerud county.",
+        # "B39": "Provide a 1 km grid-cell comparison of buildings in Kristiansand municipality exposed to 200-year storm-surge areas, 200-year flood zones, and both, and report the municipality number and county name.",
+        "B40": "List the five 1 km grid cells in Kristiansand municipality with the highest number of buildings exposed to both 200-year storm-surge areas and 200-year flood zones, sorted by building count descending, and report the municipality number and county name.",
     }
     
     model_ids = ["gpt-5-mini"]
@@ -608,7 +631,7 @@ async def main():
             _print_summary(query, results)
 
             if q_idx < len(queries):
-                wait = random.randint(30, 40)
+                wait = random.randint(40, 60)
                 logger.info("Waiting %ss before next query...", wait)
                 await asyncio.sleep(wait)
 
