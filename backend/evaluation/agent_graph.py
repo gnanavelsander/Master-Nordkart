@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 
 from dataclasses import asdict
 
@@ -189,12 +190,14 @@ async def _model_node(state: AgentState) -> AgentState:
     # )
     state["crash_snapshot"] = _build_snapshot(state)
 
+    llm_t0 = time.perf_counter()
     try:
         ai = await model.ainvoke(state["msgs"])
     except Exception as e:
         state["all_errors"] = _dedup(list(state.get("all_errors", [])) + [str(e)])
         state["crash_snapshot"] = _build_snapshot(state, extra_error=str(e))
         raise AgentRunError(str(e), snapshot=state["crash_snapshot"])
+    model_latency_s = round(time.perf_counter() - llm_t0, 6)
 
     tool_names = [tc["name"] for tc in (ai.tool_calls or [])]
     # logger.debug(
@@ -308,6 +311,9 @@ async def _model_node(state: AgentState) -> AgentState:
         "iteration": state["iterations"],
         "tokens": dict(state["current_iter_tokens"]),
         "estimated_tokens": dict(state["estimated_current_iter_tokens"]),
+        "model_latency_s": model_latency_s,
+        "tool_latency_s": 0.0,
+        "iteration_latency_s": model_latency_s,
         "ai_content": (ai.content or "").strip(),
         "llm": runtime_info,
 

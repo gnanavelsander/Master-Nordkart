@@ -31,6 +31,7 @@ class ModelParams:
     max_tokens: int = 2000
     timeout: int = 60
     max_retries: int = 2
+    use_embeddings: bool = False
     tool_choice: str = "auto"
     max_iterations: int = 12
     max_sql_repairs: int = 3

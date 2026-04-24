@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from langchain_core.messages import ToolMessage
@@ -1016,6 +1017,7 @@ def _build_tool_message_and_log(
     raw_args: dict,
     args: dict,
     result: Any,
+    latency_s: float | None,
     msgs: list,
     iteration_tools: list,
 ) -> None:
@@ -1025,18 +1027,28 @@ def _build_tool_message_and_log(
         "tool": name,
         "raw_args": raw_args,
         "args": args,
+        "latency_s": latency_s,
         "result": content,
     })
 
     logger.info("      [tool] TOOL   : %s", name)
     logger.info("      [tool] ARGS   : %s", args)
     logger.info("      [tool] RESULT : %s", content)
+    if latency_s is not None:
+        logger.info("      [tool] LAT    : %.6fs", latency_s)
 
     tool_call_id = tc.get("id") or f"fallback_{i}"
     msgs.append(ToolMessage(content=content, tool_call_id=tool_call_id))
 
 
-def _build_step_event(state: "AgentState", name: str, raw_args: dict, args: dict, result: Any) -> dict | None:
+def _build_step_event(
+    state: "AgentState",
+    name: str,
+    raw_args: dict,
+    args: dict,
+    result: Any,
+    latency_s: float | None = None,
+) -> dict | None:
     parsed_result = _parse_tool_result(result)
 
     if name == "tool_validate_sql":
@@ -1059,6 +1071,7 @@ def _build_step_event(state: "AgentState", name: str, raw_args: dict, args: dict
             "step_retries": state.get("step_retry_counts", {}).get(step_number, 0),
             "validation_invalidated": bool(state.get("last_validation_invalidated", False)),
             "validation_invalidated_reason": state.get("last_validation_invalidated_reason"),
+            "latency_s": latency_s,
         }
 
     if name in NON_DISCOVERY_EXEC_TOOLS:
@@ -1075,6 +1088,7 @@ def _build_step_event(state: "AgentState", name: str, raw_args: dict, args: dict
             "rows_returned": int(parsed_result.get("rows_returned") or 0) if isinstance(parsed_result, dict) else 0,
             "sql_repairs": 0,
             "step_retries": 0,
+            "latency_s": latency_s,
         }
 
     if name not in STEP_TOOLS:
@@ -1098,6 +1112,7 @@ def _build_step_event(state: "AgentState", name: str, raw_args: dict, args: dict
         "rows_returned": step_meta.get("rows_returned"),
         "sql_repairs": state.get("sql_repair_counts", {}).get(step_number, 0),
         "step_retries": state.get("step_retry_counts", {}).get(step_number, 0),
+        "latency_s": latency_s,
     }
 
 
@@ -1176,13 +1191,14 @@ async def _tools_node(state: AgentState) -> AgentState:
         args = _normalize_tool_args(name, raw_args, state["run_id"])
         tool = tool_map.get(name)
         state["total_tool_calls"] = state.get("total_tool_calls", 0) + 1
+        tool_latency_s: float | None = None
 
         if tool is None:
             err = f"Unknown tool: {name}"
             iter_flags["iter_had_error"] = True
 
             state["all_errors"] = _dedup(list(state.get("all_errors", [])) + [err])
-            _build_tool_message_and_log(tc, i, name, raw_args, args, err, msgs, iteration_tools)
+            _build_tool_message_and_log(tc, i, name, raw_args, args, err, 0.0, msgs, iteration_tools)
             
 
             
@@ -1191,6 +1207,7 @@ async def _tools_node(state: AgentState) -> AgentState:
             continue
 
         result_str = ""
+        tool_t0 = time.perf_counter()
 
         try:
             if name in STEP_TOOLS:
@@ -1260,11 +1277,14 @@ async def _tools_node(state: AgentState) -> AgentState:
             else:
                 result_str = await tool.ainvoke(args)
                 _handle_discovery_tool(state, name, args, result_str)
+            tool_latency_s = round(time.perf_counter() - tool_t0, 6)
 
             _build_tool_message_and_log(
-                tc, i, name, raw_args, args, result_str, msgs, iteration_tools
+                tc, i, name, raw_args, args, result_str, tool_latency_s, msgs, iteration_tools
             )
-            step_event = _build_step_event(state, name, raw_args, args, result_str)
+            step_event = _build_step_event(
+                state, name, raw_args, args, result_str, tool_latency_s
+            )
             if step_event is not None:
                 iteration_step_events.append(step_event)
 
@@ -1272,8 +1292,13 @@ async def _tools_node(state: AgentState) -> AgentState:
             err = f"Error: {e}"
             iter_flags["iter_had_error"] = True
             state["all_errors"] = _dedup(list(state.get("all_errors", [])) + [err])
-            _build_tool_message_and_log(tc, i, name, raw_args, args, err, msgs, iteration_tools)
-            step_event = _build_step_event(state, name, raw_args, args, err)
+            tool_latency_s = round(time.perf_counter() - tool_t0, 6)
+            _build_tool_message_and_log(
+                tc, i, name, raw_args, args, err, tool_latency_s, msgs, iteration_tools
+            )
+            step_event = _build_step_event(
+                state, name, raw_args, args, err, tool_latency_s
+            )
             if step_event is not None:
                 iteration_step_events.append(step_event)
 
@@ -1286,6 +1311,15 @@ async def _tools_node(state: AgentState) -> AgentState:
     if run_log:
         run_log[-1]["tools"] = iteration_tools
         run_log[-1]["step_events"] = iteration_step_events
+        tool_latency_total = round(
+            sum(float(t.get("latency_s") or 0.0) for t in iteration_tools),
+            6,
+        )
+        run_log[-1]["tool_latency_s"] = tool_latency_total
+        run_log[-1]["iteration_latency_s"] = round(
+            float(run_log[-1].get("model_latency_s") or 0.0) + tool_latency_total,
+            6,
+        )
         run_log[-1]["iteration_error"] = (
             state.get("last_guard_error")
             or state.get("last_execute_error")

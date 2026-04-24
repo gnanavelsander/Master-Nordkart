@@ -111,52 +111,53 @@ async def agent(
     retrieval_context = ""
     retrieval_scope_active = False
     retrieval_top_score: float | None = None
-
-    # --- EMBEDDING RETRIEVAL DISABLED ---
-    # Uncomment to re-enable embedding-based database retrieval and prefetch.
-    #
-    # try:
-    #     retrieval_candidates = retrieve_database_candidates(
-    #         user_input,
-    #         k=EMBEDDINGS_TOP_K,
-    #         index_path=EMBEDDINGS_TABLE_INDEX_PATH,
-    #     )
-    #     top_score = retrieval_candidates[0]["score"] if retrieval_candidates else -1.0
-    #     retrieval_top_score = top_score if retrieval_candidates else None
-    #     retrieval_scope_active = bool(retrieval_candidates) and top_score >= EMBEDDINGS_MIN_SCORE
-    #     retrieval_context = build_retrieval_context(retrieval_candidates)
-    #     if retrieval_context and not retrieval_scope_active:
-    #         retrieval_context += (
-    #             "\nFallback note: retrieval confidence is low, so broader discovery tools remain available."
-    #         )
-    #     logger.info(
-    #         "[RETRIEVAL][%s] candidates=%s scope_active=%s top_score=%.3f",
-    #         model_id,
-    #         [f"{c.get('database')}={c.get('score', -1):.3f}" for c in retrieval_candidates],
-    #         retrieval_scope_active,
-    #         top_score,
-    #     )
-    # except Exception as e:
-    #     logger.warning("[RETRIEVAL][%s] failed: %s", model_id, e)
-    #
-    # preferred_databases = _candidate_database_order(retrieval_candidates)
-    # seeded_databases = list(preferred_databases)
-    # seeded_tables: list[str] = []
-    #
-    # if preferred_databases:
-    #     try:
-    #         prefetch_result = await prefetch_databases(preferred_databases)
-    #         logger.info(
-    #             "[RETRIEVAL][%s] prefetched_databases=%s",
-    #             model_id,
-    #             prefetch_result.get("opened", preferred_databases) if isinstance(prefetch_result, dict) else preferred_databases,
-    #         )
-    #     except Exception as e:
-    #         logger.warning("[RETRIEVAL][%s] database prefetch failed: %s", model_id, e)
-    # --- END EMBEDDING RETRIEVAL ---
-
     seeded_databases: list[str] = []
     seeded_tables: list[str] = []
+
+    if params.use_embeddings:
+        try:
+            load_index(EMBEDDINGS_TABLE_INDEX_PATH)
+            retrieval_candidates = retrieve_database_candidates(
+                user_input,
+                k=EMBEDDINGS_TOP_K,
+                index_path=EMBEDDINGS_TABLE_INDEX_PATH,
+            )
+            top_score = retrieval_candidates[0]["score"] if retrieval_candidates else -1.0
+            retrieval_top_score = top_score if retrieval_candidates else None
+            retrieval_scope_active = (
+                bool(retrieval_candidates) and top_score >= EMBEDDINGS_MIN_SCORE
+            )
+            retrieval_context = build_retrieval_context(retrieval_candidates)
+            if retrieval_context and not retrieval_scope_active:
+                retrieval_context += (
+                    "\nFallback note: retrieval confidence is low, so broader discovery tools remain available."
+                )
+            logger.info(
+                "[RETRIEVAL][%s] enabled=%s candidates=%s scope_active=%s top_score=%.3f",
+                model_id,
+                params.use_embeddings,
+                [f"{c.get('database')}={c.get('score', -1):.3f}" for c in retrieval_candidates],
+                retrieval_scope_active,
+                top_score,
+            )
+        except Exception as e:
+            logger.warning("[RETRIEVAL][%s] failed: %s", model_id, e)
+
+        preferred_databases = _candidate_database_order(retrieval_candidates)
+        seeded_databases = list(preferred_databases)
+
+        if preferred_databases:
+            try:
+                prefetch_result = await prefetch_databases(preferred_databases)
+                logger.info(
+                    "[RETRIEVAL][%s] prefetched_databases=%s",
+                    model_id,
+                    prefetch_result.get("opened", preferred_databases)
+                    if isinstance(prefetch_result, dict)
+                    else preferred_databases,
+                )
+            except Exception as e:
+                logger.warning("[RETRIEVAL][%s] database prefetch failed: %s", model_id, e)
 
     msgs = [SystemMessage(content=prompt)]
     if retrieval_context:
@@ -544,7 +545,7 @@ async def main():
     logger.setLevel(logging.DEBUG)
 
     queries = {
-        #"B1": "Count all buildings in Kristiansand municipality.",
+        "B1": "Count all buildings in Kristiansand municipality.",
         "B2": "Find 10 parcels in Kristiansand municipality, sorted by teigid ascending.",
         "B3": "Find 10 buildings with status FA in Stavanger municipality, sorted by bygningid ascending.",
         "B4": "Find 10 parcels larger than 5000 m² in Drammen municipality, sorted by lagretberegnetareal descending.",
@@ -562,14 +563,14 @@ async def main():
         "B15": "Count all buildings in Trondheim municipality that intersect quick-clay hazard areas.",
         "B16": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas, sorted by teigid ascending.",
 
-        # "B17": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and have status FA, sorted by bygningid ascending.",
-        # "B18": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones, sorted by lagretberegnetareal descending.",
-        # "B19": "Find 10 buildings in Kristiansand municipality that intersect 200-year storm-surge areas and report both municipality and county.",
-        # "B20": "Find 10 parcels in Kristiansand municipality that intersect 200-year storm-surge areas and report both municipality and county.",
-        # "B21": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by bygningid ascending.",
-        # "B22": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by teigid ascending.",
-        # "B23": "Count all 1 km grid cells in Kristiansand municipality that intersect 200-year storm-surge areas.",
-        # "B24": "Find 10 buildings in Kristiansand municipality within 50 metres of 200-year storm-surge areas, sorted by shortest distance first, and report both municipality and county.",
+        "B17": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and have status FA, sorted by bygningid ascending.",
+        "B18": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones, sorted by lagretberegnetareal descending.",
+        "B19": "Find 10 buildings in Kristiansand municipality that intersect 200-year storm-surge areas and report both municipality and county.",
+        "B20": "Find 10 parcels in Kristiansand municipality that intersect 200-year storm-surge areas and report both municipality and county.",
+        "B21": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by bygningid ascending.",
+        "B22": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by teigid ascending.",
+        "B23": "Count all 1 km grid cells in Kristiansand municipality that intersect 200-year storm-surge areas.",
+        "B24": "Find 10 buildings in Kristiansand municipality within 50 metres of 200-year storm-surge areas, sorted by shortest distance first, and report both municipality and county.",
 
         # "B25": "Find 10 buildings in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by bygningid ascending.",
         # "B26": "Find 10 parcels in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by teigid ascending.",
@@ -587,7 +588,7 @@ async def main():
         # "B37": "List the five municipalities in Buskerud county with the highest number of buildings in 200-year flood zones, sorted by count descending.",
         # "B38": "Provide a municipality-level overview of parcels located in 200-year flood zones in Buskerud county.",
         # "B39": "Provide a 1 km grid-cell comparison of buildings in Kristiansand municipality exposed to 200-year storm-surge areas, 200-year flood zones, and both, and report the municipality number and county name.",
-        "B40": "List the five 1 km grid cells in Kristiansand municipality with the highest number of buildings exposed to both 200-year storm-surge areas and 200-year flood zones, sorted by building count descending, and report the municipality number and county name.",
+        #"B40": "List the five 1 km grid cells in Kristiansand municipality with the highest number of buildings exposed to both 200-year storm-surge areas and 200-year flood zones, sorted by building count descending, and report the municipality number and county name.",
     }
     
     model_ids = ["gpt-5-mini"]

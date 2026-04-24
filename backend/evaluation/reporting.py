@@ -302,6 +302,178 @@ def _build_terminal_context(run_logs: list | None, all_errors: list[str] | None)
     }
 
 
+def _latency_breakdown(run_logs: list | None) -> dict:
+    per_iteration: list[dict] = []
+    per_tool: list[dict] = []
+    total_model_latency = 0.0
+    total_tool_latency = 0.0
+    total_iteration_latency = 0.0
+
+    for run in run_logs or []:
+        run_index = run.get("run_index", 0)
+        for entry in run.get("iterations") or []:
+            model_latency = float(entry.get("model_latency_s") or 0.0)
+            tool_latency = float(entry.get("tool_latency_s") or 0.0)
+            iteration_latency = float(
+                entry.get("iteration_latency_s")
+                or (model_latency + tool_latency)
+            )
+
+            total_model_latency += model_latency
+            total_tool_latency += tool_latency
+            total_iteration_latency += iteration_latency
+
+            per_iteration.append(
+                {
+                    "run_index": run_index,
+                    "iteration": entry.get("iteration"),
+                    "model_latency_s": round(model_latency, 6),
+                    "tool_latency_s": round(tool_latency, 6),
+                    "iteration_latency_s": round(iteration_latency, 6),
+                }
+            )
+
+            for tool in entry.get("tools") or []:
+                per_tool.append(
+                    {
+                        "run_index": run_index,
+                        "iteration": entry.get("iteration"),
+                        "tool": tool.get("tool"),
+                        "latency_s": round(float(tool.get("latency_s") or 0.0), 6),
+                    }
+                )
+
+    return {
+        "per_iteration_latency_s": per_iteration,
+        "per_tool_latency_s": per_tool,
+        "latency_summary": {
+            "total_model_latency_s": round(total_model_latency, 6),
+            "total_tool_latency_s": round(total_tool_latency, 6),
+            "total_iteration_latency_s": round(total_iteration_latency, 6),
+            "max_iteration_latency_s": round(
+                max((x["iteration_latency_s"] for x in per_iteration), default=0.0),
+                6,
+            ),
+            "max_tool_latency_s": round(
+                max((x["latency_s"] for x in per_tool), default=0.0),
+                6,
+            ),
+        },
+    }
+
+
+def _latest_failed_step(run_logs: list | None) -> int | None:
+    for run in reversed(_active_plan_logs(run_logs)):
+        trigger_step = run.get("replan_trigger_step")
+        if trigger_step is not None:
+            return trigger_step
+        for entry in reversed(run.get("iterations") or []):
+            failed_step = entry.get("failed_step")
+            if failed_step is not None:
+                return failed_step
+    return None
+
+
+def _latest_iteration_error(run_logs: list | None) -> tuple[str | None, int | None]:
+    for run in reversed(_active_plan_logs(run_logs)):
+        for entry in reversed(run.get("iterations") or []):
+            iteration_error = entry.get("iteration_error")
+            if iteration_error:
+                return iteration_error, entry.get("failed_step")
+    return None, None
+
+
+def _looks_like_tool_shape_error(error: str | None) -> bool:
+    if not error:
+        return False
+
+    try:
+        parsed = json.loads(error) if isinstance(error, str) else (error or {})
+        text = str(parsed.get("reason") or parsed.get("error") or error)
+    except Exception:
+        text = str(error)
+
+    text = text.lower()
+    return any(
+        needle in text
+        for needle in (
+            "correct shape",
+            "must be a dict",
+            "top-level arguments",
+            "nested inside a single 'step' dict",
+            "tool_validate_sql requires",
+        )
+    )
+
+
+def _has_tool_shape_errors(run_logs: list | None) -> bool:
+    for run in run_logs or []:
+        counts = run.get("tool_shape_error_counts") or {}
+        if any((v or 0) > 0 for v in counts.values()):
+            return True
+    return False
+
+
+def _has_pre_plan_guard_error(run_logs: list | None) -> bool:
+    for run in _active_plan_logs(run_logs):
+        for entry in run.get("iterations") or []:
+            if _is_pre_plan_guard_error(entry.get("iteration_error")):
+                return True
+    return False
+
+
+def _final_failure_info(
+    run_logs: list | None,
+    all_errors: list[str] | None,
+    task_completed: bool,
+) -> dict:
+    if task_completed:
+        return {
+            "final_failure_type": None,
+            "final_failure_step": None,
+        }
+
+    errors = [str(err) for err in (all_errors or []) if err]
+    error_blob = " | ".join(errors).lower()
+    latest_error, latest_error_step = _latest_iteration_error(run_logs)
+    failed_summary = _failed_step_summary(run_logs)
+    failure_step = (
+        (failed_summary or {}).get("step")
+        or latest_error_step
+        or _latest_failed_step(run_logs)
+    )
+
+    if "replan budget" in error_blob:
+        failure_type = "replan_exhausted"
+    elif "max_iterations" in error_blob:
+        failure_type = "iteration_budget"
+    elif latest_error and _is_pre_plan_guard_error(latest_error):
+        failure_type = "pre_plan_guard"
+    elif latest_error and _looks_like_tool_shape_error(latest_error):
+        failure_type = "tool_shape"
+    elif latest_error and _has_pre_plan_guard_error(run_logs):
+        failure_type = "pre_plan_guard"
+    elif failed_summary and (
+        failed_summary.get("sql_repairs", 0) > 0 or "validated" in str(failed_summary.get("status") or "").lower()
+    ):
+        failure_type = "sql_validation"
+    elif latest_error and _has_tool_shape_errors(run_logs):
+        failure_type = "tool_shape"
+    elif failed_summary is not None:
+        failure_type = "step_execution"
+    elif _has_tool_shape_errors(run_logs):
+        failure_type = "tool_shape"
+    elif _has_pre_plan_guard_error(run_logs):
+        failure_type = "pre_plan_guard"
+    else:
+        failure_type = "step_execution"
+
+    return {
+        "final_failure_type": failure_type,
+        "final_failure_step": failure_step,
+    }
+
+
 def _active_errors_for_result(result: PipelineResult) -> list[str]:
     active_step_issues, recovered_step_issues = _step_issue_summaries(result.run_logs)
     status_errors = _step_status_errors(result.run_logs)
@@ -965,6 +1137,12 @@ async def store_run(run: EvalRun, results: list) -> str:
                 run_logs,
                 active_errors,
             )
+            failure_info = _final_failure_info(
+                run_logs,
+                active_errors,
+                task_completed,
+            )
+            latency_info = _latency_breakdown(run_logs)
             metrics = _summary_metrics(run_logs, trace)
             result_contract = _extract_result_contract_info(outcome["result_data"])
             published_result_contract = result_contract if task_completed else None
@@ -990,6 +1168,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "executed": executed,
                 "task_completed": task_completed,
                 "model_task_completed": snap.get("task_completed", False),
+                "final_failure_type": failure_info["final_failure_type"],
+                "final_failure_step": failure_info["final_failure_step"],
                 "iterations": snap.get("iterations", 0),
                 "total_tool_calls": trace.total_tool_calls,
                 "latency_s": None,
@@ -1014,6 +1194,9 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "active_step_issues": active_step_issues,
                 "recovered_step_issues": recovered_step_issues,
                 "step_outcomes": step_outcomes,
+                "per_iteration_latency_s": latency_info["per_iteration_latency_s"],
+                "per_tool_latency_s": latency_info["per_tool_latency_s"],
+                "latency_summary": latency_info["latency_summary"],
                 "terminal_context": terminal_context,
                 "final": {
                     "answer": None,
@@ -1029,6 +1212,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "executed": executed,
                     "steps_executed": _step_execution_map(run_logs),
                     "task_completed": task_completed,
+                    "final_failure_type": failure_info["final_failure_type"],
+                    "final_failure_step": failure_info["final_failure_step"],
                     "iterations": doc["iterations"],
                     "total_tool_calls": trace.total_tool_calls,
                     "latency_s": None,
@@ -1073,6 +1258,12 @@ async def store_run(run: EvalRun, results: list) -> str:
             executed = outcome["executed"]
             task_completed = outcome["task_completed"]
             terminal_context = _build_terminal_context(run_logs, active_errors)
+            failure_info = _final_failure_info(
+                run_logs,
+                active_errors,
+                task_completed,
+            )
+            latency_info = _latency_breakdown(run_logs)
             result_contract = _extract_result_contract_info(outcome["result_data"])
             published_result_contract = result_contract if task_completed else None
             published_row_count = (
@@ -1096,6 +1287,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "executed": executed,
                 "task_completed": task_completed,
                 "model_task_completed": r.task_completed,
+                "final_failure_type": failure_info["final_failure_type"],
+                "final_failure_step": failure_info["final_failure_step"],
                 "iterations": r.iterations,
                 "total_tool_calls": trace.total_tool_calls,
                 "latency_s": r.latency_s,
@@ -1119,6 +1312,9 @@ async def store_run(run: EvalRun, results: list) -> str:
                 "active_step_issues": active_step_issues,
                 "recovered_step_issues": recovered_step_issues,
                 "step_outcomes": step_outcomes,
+                "per_iteration_latency_s": latency_info["per_iteration_latency_s"],
+                "per_tool_latency_s": latency_info["per_tool_latency_s"],
+                "latency_summary": latency_info["latency_summary"],
                 "terminal_context": terminal_context,
                 "final": {
                     "answer": r.final_answer,
@@ -1136,6 +1332,8 @@ async def store_run(run: EvalRun, results: list) -> str:
                     "executed": executed,
                     "steps_executed": _step_execution_map(r.run_logs or []),
                     "task_completed": task_completed,
+                    "final_failure_type": failure_info["final_failure_type"],
+                    "final_failure_step": failure_info["final_failure_step"],
                     "iterations": r.iterations,
                     "total_tool_calls": trace.total_tool_calls,
                     "latency_s": r.latency_s,
