@@ -32,6 +32,11 @@ def query_hash(query: str) -> str:
     return hashlib.md5(query.encode()).hexdigest()[:10]
 
 
+def config_hash(config: Any) -> str:
+    payload = json.dumps(config, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()[:10]
+
+
 def upload(path: str, data: Any):
     blob = _get_blob_service().get_blob_client(
         container=AZURE_STORAGE_CONTAINER,
@@ -78,13 +83,14 @@ def _update_queries_index(
     query: str,
     summary: list,
     prompt_name: str,
+    config_id: str,
     query_id: str | None = None,
 ):
     path = f"{src}/index.json"
     index = _download_json(path) or []
 
     new_breakdown_keys = [
-        f"{s['model_id']}::{prompt_name}" for s in summary if s.get("model_id")
+        f"{s['model_id']}::{prompt_name}::{config_id}" for s in summary if s.get("model_id")
     ]
 
     if not any(e["query_hash"] == q_hash for e in index):
@@ -116,6 +122,7 @@ def _update_runs_index(
     run_id: str,
     summary: list,
     prompt_name: str,
+    config_id: str,
     embedding_active: bool,
 ):
     path = f"{src}/{q_hash}/{prompt_name}/runs/index.json"
@@ -126,8 +133,8 @@ def _update_runs_index(
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "models_run": [s["model_id"] for s in summary],
         "prompt_name": prompt_name,
+        "config_id": config_id,
         "embedding_active": embedding_active,
     })
 
     upload(path, index)
-

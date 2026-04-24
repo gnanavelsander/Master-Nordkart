@@ -166,15 +166,13 @@ OLLAMA_MODEL_IDS = {
 AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 AZURE_STORAGE_CONTAINER = "result"
 
-STORAGE_VERSION = os.getenv("STORAGE_VERSION", "run_33")
+STORAGE_VERSION = os.getenv("STORAGE_VERSION", "run_10000")
 
 
 DB_DESCRIPTIONS = {
-    "postgis": "General PostGIS database from PGCONN_STRING with mixed spatial tables such as buildings, flood zones, routes, and related GIS layers.",
     "matrikkelenbygning": "Building and cadastral building data, including building identifiers, municipality attributes, status fields, and building representation points.",
     "flomaktsomrader": "Flood hazard and flood susceptibility spatial data, including hazard polygons and related flood-risk layers.",
     "flomsoner": "Flood zone spatial data, including flood hazard polygons and flood zone identifiers.",
-    "brannstasjoner": "Fire station location data and related spatial reference information.",
     "kvikkleire": "Quick clay hazard data and related landslide-risk spatial layers.",
     "snoskredaktsomhetskart": "Snow avalanche susceptibility data and related hazard zones.",
     "matrikkeleneiendomskartteig": "Property parcel data with parcel identifiers, municipality attributes, parcel polygons, and cadastral parcel metadata.",
@@ -182,7 +180,6 @@ DB_DESCRIPTIONS = {
     "kommuner": "Municipality boundary and municipality reference data, including official municipality names, municipality numbers, and municipality polygons.",
     "fylker": "County boundary and county reference data, including official county names, county numbers, and county polygons.",
     "statistiskrutenett1km": "Regular 1 km statistical grid for spatial aggregation and grid-based analysis independent of municipality boundaries.",
-    "trafikkmengde": "Road traffic volume data linked to road segments, useful for traffic intensity filtering and transport-related spatial analysis.",
     "stedsnavn": "Place name data with coordinates, language form, municipality affiliation, and place name type.",
 
     "arealressurskart_ar50": "AR50 land resource data with area types, agriculture classes, and forest productivity information.",

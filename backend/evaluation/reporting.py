@@ -1056,15 +1056,13 @@ def _print_details(results: list):
 async def store_run(run: EvalRun, results: list) -> str:
     q_hash = query_hash(run.query)
     run_id = uuid.uuid4().hex
+    base = f"{STORAGE_VERSION}/{q_hash}/{run.prompt_name}/runs/{run_id}"
     config_payload = {
         "prompt_name": run.prompt_name,
         "params": asdict(run.params),
     }
     config_id = config_hash(config_payload)
-    config_path = f"{STORAGE_VERSION}/configs/{config_id}.json"
-
-
-    base = f"{STORAGE_VERSION}/{q_hash}/{run.prompt_name}/runs/{run_id}"
+    config_path = f"{base}/config.json"
 
     loop = asyncio.get_running_loop()
 
