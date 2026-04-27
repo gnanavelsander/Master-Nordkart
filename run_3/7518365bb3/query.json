@@ -1,5 +1,0 @@
-{
-  "query_id": "B23",
-  "query": "Find 10 parcels in Bergen municipality that contain storm-surge polygons, sorted by teigid ascending.",
-  "query_hash": "7518365bb3"
-}

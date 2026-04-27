@@ -1,5 +1,0 @@
-{
-  "query_id": "B17",
-  "query": "Find 10 buildings located in snow-avalanche hazard areas in Narvik municipality, sorted by bygningid ascending.",
-  "query_hash": "366cf6d3de"
-}

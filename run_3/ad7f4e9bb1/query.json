@@ -1,5 +1,0 @@
-{
-  "query_id": "B29",
-  "query": "Find 10 buildings in Oslo municipality that are exposed to both flood hazard areas and soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
-  "query_hash": "ad7f4e9bb1"
-}

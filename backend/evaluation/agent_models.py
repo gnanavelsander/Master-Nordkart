@@ -146,6 +146,7 @@ class AgentState(TypedDict, total=False):
     last_executed_result: Any      
     last_execute_error: Optional[str]
     last_failed_step: Optional[int]  
+    last_empty_step: Optional[int]
  
     discovered_tables: list[str]
     discovered_databases: list[str]

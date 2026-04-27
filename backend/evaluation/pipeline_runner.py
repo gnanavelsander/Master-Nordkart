@@ -195,6 +195,7 @@ async def agent(
         "last_executed_result": None,
         "last_execute_ok": False,
         "last_execute_error": None,
+        "last_empty_step": None,
         "discovered_tables": seeded_tables,
         "discovered_databases": seeded_databases,
         "valid_sql": False,
@@ -565,40 +566,42 @@ async def main():
 
         "B17": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and have status FA, sorted by bygningid ascending.",
         "B18": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones, sorted by lagretberegnetareal descending.",
-        "B19": "Find 10 buildings in Kristiansand municipality that intersect 200-year storm-surge areas and report both municipality and county.",
-        "B20": "Find 10 parcels in Kristiansand municipality that intersect 200-year storm-surge areas and report both municipality and county.",
+      # "B19": "Find 10 buildings in Kristiansand municipality that intersect 200-year storm-surge areas, sorted by bygningid ascending, and report both municipality and county.",
+       # "B20": "Find 10 parcels in Kristiansand municipality that intersect 200-year storm-surge areas, sorted by teigid ascending, and report both municipality and county.",
         "B21": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by bygningid ascending.",
         "B22": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by teigid ascending.",
         "B23": "Count all 1 km grid cells in Kristiansand municipality that intersect 200-year storm-surge areas.",
         "B24": "Find 10 buildings in Kristiansand municipality within 50 metres of 200-year storm-surge areas, sorted by shortest distance first, and report both municipality and county.",
 
-        # "B25": "Find 10 buildings in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by bygningid ascending.",
-        # "B26": "Find 10 parcels in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by teigid ascending.",
-        # "B27": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and are within 50 metres of the municipal boundary, sorted by shortest distance first.",
-        # "B28": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones and are within 50 metres of the municipal boundary, sorted by lagretberegnetareal descending.",
-        # "B29": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class and are closest to the municipality centroid, sorted by shortest distance first.",
-        # "B30": "Find 10 parcels in Trondheim municipality larger than 5000 m² that intersect quick-clay hazard areas with high risk class, sorted by lagretberegnetareal descending, and report both municipality and county.",
-        # "B31": "Find 10 buildings in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, and report both municipality and county.",
-        # "B32": "Find 10 1 km grid cells in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by ssbid1000m ascending.",
+        "B25": "Find 10 buildings in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by bygningid ascending.",
+        "B26": "Find 10 parcels in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by teigid ascending.",
+        "B27": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and are within 50 metres of the municipal boundary, sorted by shortest distance first.",
+        "B28": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones and are within 50 metres of the municipal boundary, sorted by lagretberegnetareal descending.",
+        "B29": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class and are closest to the municipality centroid, sorted by shortest distance first.",
+        "B30": "Find 10 parcels in Trondheim municipality larger than 5000 m² that intersect quick-clay hazard areas with high risk class, sorted by lagretberegnetareal descending, and report both municipality and county.",
+      # "B31": "Find 10 buildings in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by bygningid ascending, and report both municipality and county.",
+        "B32": "Find 10 1 km grid cells in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by ssbid1000m ascending.",
 
+        "B34": "List the five 1 km grid cells in Lillestrøm municipality with the highest number of parcels located in quick-clay hazard areas, sorted by parcel count descending.",
+     #   "B35": "List the five municipalities in Agder county with the highest number of buildings in 200-year storm-surge areas, sorted by count descending.",
+        "B37": "List the five municipalities in Buskerud county with the highest number of buildings in 200-year flood zones, sorted by count descending.",
+        #"B40": "List the five 1 km grid cells in Kristiansand municipality with the highest number of buildings exposed to both 200-year storm-surge areas and 200-year flood zones, sorted by building count descending, and report the municipality number and county name.",
+
+        # Disabled from the core benchmark until rewritten with explicit output columns.
         # "B33": "Provide a 1 km grid-cell overview of buildings in Lillestrøm municipality located in quick-clay hazard areas.",
-        # "B34": "List the five 1 km grid cells in Lillestrøm municipality with the highest number of parcels located in quick-clay hazard areas, sorted by parcel count descending.",
-        # "B35": "List the five municipalities in Agder county with the highest number of buildings in 200-year storm-surge areas, sorted by count descending.",
         # "B36": "Provide a 1 km grid-cell overview of buildings located in 200-year flood zones in Drammen municipality, and report the municipality number and county name.",
-        # "B37": "List the five municipalities in Buskerud county with the highest number of buildings in 200-year flood zones, sorted by count descending.",
         # "B38": "Provide a municipality-level overview of parcels located in 200-year flood zones in Buskerud county.",
         # "B39": "Provide a 1 km grid-cell comparison of buildings in Kristiansand municipality exposed to 200-year storm-surge areas, 200-year flood zones, and both, and report the municipality number and county name.",
-        #"B40": "List the five 1 km grid cells in Kristiansand municipality with the highest number of buildings exposed to both 200-year storm-surge areas and 200-year flood zones, sorted by building count descending, and report the municipality number and county name.",
     }
     
-    model_ids = ["gpt-5-mini"]
+    model_ids = ["Mistral-Large-3","gpt-5-mini"]
 
     params = ModelParams(
         temperature=0.0,
         max_tokens=2000,
         timeout=300,
         max_retries=0,
-        max_iterations=30,
+        max_iterations=50,
         max_sql_repairs=2,
         max_step_retries=2,
         max_replans=2,

@@ -386,7 +386,7 @@ def _valid_sql_from_steps(
         return all(step.get("validated", False) for step in query_steps)
 
     return all(
-        step.get("executed", False) and step.get("status") == "ok"
+        step.get("executed", False) and step.get("status") in {"ok", "empty"}
         for step in outcomes
     )
 
@@ -413,6 +413,29 @@ def _format_step_execution(step_map: dict[str, bool]) -> str:
     for step_no in sorted(step_map, key=lambda x: int(x) if x.isdigit() else x):
         parts.append(f"{step_no}:{'T' if step_map[step_no] else 'F'}")
     return " ".join(parts)
+
+
+def _terminal_required_step_ids(required_ids: set[str]) -> set[str]:
+    if not required_ids:
+        return set()
+
+    numeric_ids = [int(step_id) for step_id in required_ids if str(step_id).isdigit()]
+    if numeric_ids and len(numeric_ids) == len(required_ids):
+        return {str(max(numeric_ids))}
+
+    return {sorted(str(step_id) for step_id in required_ids)[-1]}
+
+
+def _step_counts_as_completed(step: dict, terminal_step_ids: set[str]) -> bool:
+    if not step.get("executed", False):
+        return False
+
+    status = step.get("status")
+    if status == "ok":
+        return True
+
+    step_id = _normalize_step_key(step.get("step"))
+    return status == "empty" and step_id in terminal_step_ids
 
 
 def _answer_indicates_incomplete_task(answer: str | None) -> bool:
@@ -489,8 +512,10 @@ def _task_completed_from_steps(
     if not outcome_by_step:
         return False
 
+    terminal_step_ids = _terminal_required_step_ids(required_ids)
+
     steps_ok = all(
-        step.get("executed", False) and step.get("status") == "ok"
+        _step_counts_as_completed(step, terminal_step_ids)
         for step in outcomes
         if _normalize_step_key(step.get("step")) in required_ids
     )
@@ -500,7 +525,7 @@ def _task_completed_from_steps(
     if planned_steps and required_ids:
         ok_step_ids = {
             k for k, v in outcome_by_step.items()
-            if v.get("executed") and v.get("status") == "ok"
+            if _step_counts_as_completed(v, terminal_step_ids)
         }
         query_required_ids = {
             _normalize_step_key(step_id)
@@ -519,7 +544,7 @@ def _task_completed_from_steps(
         executed_non_query_actions = {
             v.get("action")
             for v in outcome_by_step.values()
-            if v.get("executed") and v.get("status") == "ok"
+            if _step_counts_as_completed(v, terminal_step_ids)
             and v.get("action") not in ("query", "discover")
         }
 

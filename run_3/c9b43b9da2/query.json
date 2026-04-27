@@ -1,5 +1,0 @@
-{
-  "query_id": "B4",
-  "query": "Find 10 parcels larger than 5000 m\u00b2 in Oslo municipality, sorted by lagretberegnetareal descending.",
-  "query_hash": "c9b43b9da2"
-}

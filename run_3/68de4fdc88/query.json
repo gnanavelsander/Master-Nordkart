@@ -1,5 +1,0 @@
-{
-  "query_id": "B13",
-  "query": "Find 10 buildings located in flood hazard areas in Bergen municipality, sorted by bygningid ascending.",
-  "query_hash": "68de4fdc88"
-}

@@ -193,6 +193,38 @@ def _planned_query_database(planned_step: dict) -> str:
     return (planned_step.get("database") or "").strip() if isinstance(planned_step, dict) else ""
 
 
+def _is_terminal_required_step(state: "AgentState", step_number: int | None) -> bool:
+    if step_number is None:
+        return False
+
+    required = set(state.get("required_step_ids", set()))
+    if not required:
+        return False
+
+    current = str(step_number)
+    required_keys = {str(step_id) for step_id in required}
+    if current not in required_keys:
+        return False
+
+    numeric_required: list[int] = []
+    for step_id in required_keys:
+        if step_id.isdigit():
+            numeric_required.append(int(step_id))
+
+    if numeric_required and current.isdigit():
+        return int(current) == max(numeric_required)
+
+    return current == sorted(required_keys)[-1]
+
+
+def _is_intermediate_empty_step(
+    state: "AgentState",
+    step_number: int | None,
+    rows_returned: int,
+) -> bool:
+    return rows_returned == 0 and not _is_terminal_required_step(state, step_number)
+
+
 def _plan_mismatch_replan_payload(
     state: "AgentState",
     step_number: int | None,
@@ -730,7 +762,13 @@ def _update_step_registry(
         "validated": prev.get("validated", False),
         "executed": exec_ok,
         "rows_returned": rows_returned,
-        "status": "ok" if exec_ok else "error",
+        "status": "empty" if exec_ok and rows_returned == 0 else ("ok" if exec_ok else "error"),
+        "empty_result": bool(exec_ok and rows_returned == 0),
+        "terminal_empty_result": bool(
+            exec_ok
+            and rows_returned == 0
+            and _is_terminal_required_step(state, step_number)
+        ),
         "locked": prev.get("locked", False),
         "step_payload": {k: v for k, v in step_obj.items() if k not in ("step", "action", "sql", "database")},
     })
@@ -776,12 +814,24 @@ def _update_iteration_flags(
     if step_number is None and isinstance(parsed_result, dict):
         step_number = parsed_result.get("step")
     run_id = state.get("run_id")
+    rows_returned = 0
+    if isinstance(parsed_result, dict):
+        try:
+            rows_returned = int(parsed_result.get("rows_returned") or parsed_result.get("row_count") or 0)
+        except (TypeError, ValueError):
+            rows_returned = 0
 
     if exec_ok:
         iter_flags["iter_any_exec_ok"] = True
         state["last_failed_step"] = None
         state["last_guard_error"] = None
-        _lock_step(state, step_number)
+        if rows_returned == 0:
+            state["last_empty_step"] = step_number
+        else:
+            state["last_empty_step"] = None
+
+        if not _is_intermediate_empty_step(state, step_number, rows_returned):
+            _lock_step(state, step_number)
 
         if name == "tool_execute_query_step":
             validated_sqls = dict(state.get("validated_sqls", {}))
@@ -1248,10 +1298,32 @@ async def _tools_node(state: AgentState) -> AgentState:
                     }
                     remaining = required - executed_now
                     step_number = step_obj.get("step") if isinstance(step_obj, dict) else None
-                    logger.info(
-                        "      [zero-rows] Step %s returned 0 rows — continuing without replan (%s remaining planned steps)",
-                        step_number, len(remaining),
-                    )
+                    if _is_terminal_required_step(state, step_number):
+                        logger.info(
+                            "      [zero-rows] Step %s returned 0 rows as terminal result — accepting as empty result",
+                            step_number,
+                        )
+                    else:
+                        sig = _zero_rows_sig(step_obj or {})
+                        counts = dict(state.get("zero_rows_replan_counts", {}))
+                        counts[sig] = counts.get(sig, 0) + 1
+                        state["zero_rows_replan_counts"] = counts
+                        state["replan_trigger"] = {
+                            "reason": "zero_rows_step",
+                            "error": (
+                                f"Step {step_number} returned 0 rows before the plan was complete. "
+                                "Treat this as an empty intermediate result and revise the plan, "
+                                "filter, join, table choice, or predicate."
+                            ),
+                            "zero_rows_step": step_number,
+                            "zero_rows_sig": sig,
+                            "empty_count": counts[sig],
+                            "remaining_required_steps": sorted(remaining),
+                        }
+                        logger.info(
+                            "      [zero-rows] Step %s returned 0 rows before completion — replan required (%s remaining planned steps)",
+                            step_number, len(remaining),
+                        )
 
             elif name == "tool_validate_sql":
                 blocked_json = _guard_validate_sql(state, args)

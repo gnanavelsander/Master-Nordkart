@@ -1,5 +1,0 @@
-{
-  "query_id": "B30",
-  "query": "Find 10 buildings in Stavanger municipality that are located on agricultural land and within soil- and flood-landslide hazard areas, sorted by bygningid ascending.",
-  "query_hash": "ab4c7aaea9"
-}

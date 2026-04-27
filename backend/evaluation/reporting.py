@@ -18,9 +18,11 @@ from backend.evaluation.prompts.agent_helpers import (
     _empty_token_dict,
     _step_execution_map,
     _format_step_execution,
+    _normalize_step_key,
     _parse_tool_result,
     _run_outcome_from_logs,
     _short,
+    _terminal_required_step_ids,
     load_prompt,
 )
 from backend.storage.AzureBlobStorage import (
@@ -151,6 +153,7 @@ def _step_issue_summaries(run_logs: list | None) -> tuple[list[dict], list[dict]
     active_logs = _active_plan_logs(run_logs)
     step_registry, sql_repairs_by_step, step_retries_by_step = _collect_active_step_stats(run_logs)
     issues_by_step: dict = {}
+    terminal_step_ids = _terminal_step_ids_from_run_logs(run_logs)
 
     for run in active_logs:
         for entry in (run.get("iterations", []) or []):
@@ -173,7 +176,7 @@ def _step_issue_summaries(run_logs: list | None) -> tuple[list[dict], list[dict]
                     "error": iteration_error,
                     "sql_repairs": sql_repairs_by_step.get(step_key, 0),
                     "step_retries": step_retries_by_step.get(step_key, 0),
-                    "recovered": bool(meta.get("executed")) and meta.get("status") == "ok",
+                    "recovered": _step_status_is_success(meta, terminal_step_ids),
                 }
             )
 
@@ -219,6 +222,28 @@ def _format_error_summary(run_logs: list | None) -> str:
     return f"{total} error{'s' if total != 1 else ''} ({', '.join(parts)})"
 
 
+def _terminal_step_ids_from_run_logs(run_logs: list | None) -> set[str]:
+    active_logs = _active_plan_logs(run_logs)
+    if not active_logs:
+        return set()
+
+    required = {
+        _normalize_step_key(step_id)
+        for step_id in (active_logs[-1].get("required_step_ids") or [])
+    }
+    return _terminal_required_step_ids(required)
+
+
+def _step_status_is_success(step: dict, terminal_step_ids: set[str]) -> bool:
+    if not step.get("executed", False):
+        return False
+    if step.get("status") == "ok":
+        return True
+
+    step_id = _normalize_step_key(step.get("step"))
+    return step.get("status") == "empty" and step_id in terminal_step_ids
+
+
 def _combine_active_errors(
     step_issues: list[dict],
     all_errors: list[str] | None,
@@ -231,9 +256,10 @@ def _combine_active_errors(
 
 def _step_status_errors(run_logs: list | None) -> list[str]:
     issues: list[str] = []
+    terminal_step_ids = _terminal_step_ids_from_run_logs(run_logs)
 
     for step in _build_step_outcomes(run_logs):
-        if step.get("executed", False) and step.get("status") == "ok":
+        if _step_status_is_success(step, terminal_step_ids):
             continue
         issues.append(
             f"Step {step.get('step')} ({step.get('action')}) "

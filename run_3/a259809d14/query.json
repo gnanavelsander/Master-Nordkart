@@ -1,5 +1,0 @@
-{
-  "query_id": "B3",
-  "query": "Find 10 buildings with status FA in Stavanger municipality, sorted by bygningid ascending.",
-  "query_hash": "a259809d14"
-}

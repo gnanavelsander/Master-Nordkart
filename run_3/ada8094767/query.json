@@ -1,5 +1,0 @@
-{
-  "query_id": "B32",
-  "query": "Find 10 buildings in Bergen municipality that are exposed to both storm-surge areas and flood hazard areas, sorted by bygningid ascending.",
-  "query_hash": "ada8094767"
-}

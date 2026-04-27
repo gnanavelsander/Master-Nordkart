@@ -1,5 +1,0 @@
-{
-  "query_id": "B39",
-  "query": "Find 10 buildings in Innlandet county that are located both in forest areas and in flood hazard areas, sorted by bygningid ascending.",
-  "query_hash": "0b3a95f4de"
-}

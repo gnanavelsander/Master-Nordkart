@@ -1,5 +1,0 @@
-{
-  "query_id": "B19",
-  "query": "Find 10 parcels within 100 metres of flood hazard areas in Kristiansand municipality, sorted by shortest distance first.",
-  "query_hash": "a0411643e6"
-}

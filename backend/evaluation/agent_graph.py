@@ -553,6 +553,7 @@ Produce a new complete plan with fresh step numbering starting from 1. Options: 
         "last_guard_error": None,
         "last_execute_error": None,
         "last_execute_ok": False,
+        "last_empty_step": None,
         "last_sql": None,
         "last_validated_sql": None,
         "current_run_log": [],
