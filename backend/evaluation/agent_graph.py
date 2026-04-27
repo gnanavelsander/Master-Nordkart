@@ -444,8 +444,6 @@ def _route_after_model(state: AgentState) -> str:
 
 
 
-
-
 def _replan_node(state: AgentState) -> AgentState:
     trigger = state.get("replan_trigger") or {}
     replan_reason = trigger.get("reason")
@@ -520,10 +518,11 @@ Produce a new complete plan with fresh step numbering starting from 1. Options: 
 
     # Always reset to a fresh conversation on replan. Appending a HumanMessage
     # after prior tool output can produce invalid message ordering for some APIs.
-    new_msgs = [
+    new_msgs = list(state.get("initial_msgs") or [
         SystemMessage(content=state["prompt"]),
-        HumanMessage(content=replan_msg),
-    ]
+        HumanMessage(content=state["user_input"]),
+    ])
+    new_msgs.append(HumanMessage(content=replan_msg))
 
     shared_reset = {
         "msgs": new_msgs,

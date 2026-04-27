@@ -149,6 +149,7 @@ Never:
 - use step results inside SQL
 - fetch a full large national layer if it can be pre-filtered first
 
+
 Use:
 - ST_Intersects for overlap
 - ST_Within for containment
@@ -194,12 +195,19 @@ For tool_execute_limit_step use exactly:
 For tool_execute_spatial_join_step use exactly:
 { "run_id": "<run_id>", "step": { "step": N, "action": "spatial_join", "left_source": M, "right_source": K, "join_type": "intersects" | "within" | "contains" | "dwithin" | "touches" | "overlaps", "left_geom": "<column>", "right_geom": "<column>" } }
 
+For tool_execute_nearest_step use exactly:
+{ "run_id": "<run_id>", "step": { "step": N, "action": "nearest", "left_source": M, "right_source": K, "left_geom": "<column>", "right_geom": "<column>" } }
+
+For tool_execute_aggregate_step use exactly:
+{ "run_id": "<run_id>", "step": { "step": N, "action": "aggregate", "source_step": M, "aggregation_type": "count" | "sum" | "avg" | "min" | "max", "group_by": ["<column>"], "metric_column": "<column>", "metric_as": "<output_column>" } }
+
 Never use:
 - left_step / right_step
 - predicate
 - sort_by / sort_cols / order
 - n
 - left_geometry / right_geometry
+- aggregations / aggregates / aggregate_sql / operation
 
 Use:
 - left_source / right_source
@@ -207,6 +215,7 @@ Use:
 - order_by / order_direction
 - limit
 - left_geom / right_geom
+- aggregation_type / group_by / metric_column / metric_as
 
 ═══════════════════════════════════════════
 FINAL ANSWER

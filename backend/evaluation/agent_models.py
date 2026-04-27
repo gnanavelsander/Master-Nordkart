@@ -121,6 +121,7 @@ class AgentState(TypedDict, total=False):
     params: ModelParams
  
     msgs: list
+    initial_msgs: list
     iterations: int
     max_iterations: int
  
