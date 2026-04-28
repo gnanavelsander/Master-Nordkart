@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from azure.storage.blob import BlobServiceClient
-from azure.core.conditions import MatchConditions
+from azure.core import MatchConditions
 from azure.core.exceptions import ResourceModifiedError, ResourceExistsError
 from config import AZURE_STORAGE_CONNECTION_STRING, AZURE_STORAGE_CONTAINER, STORAGE_VERSION
 

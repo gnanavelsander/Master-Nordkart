@@ -573,40 +573,33 @@ async def main():
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         # Level 4: multi-step spatial workflows with extra filters or reporting.
         # "B19": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and have status FA, sorted by bygningid ascending.",
         # "B20": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by bygningid ascending.",
         # # "B21": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by teigid ascending.",
-        # "B22": "Find 10 buildings in Kristiansand municipality within 50 metres of 200-year storm-surge areas, sorted by shortest distance first, and report both municipality and county.",
-        # "B23": "Find 10 parcels in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by teigid ascending.",
-        # "B24": "Find 10 parcels in Trondheim municipality larger than 5000 m² that intersect quick-clay hazard areas with high risk class, sorted by parcel area descending, and report both municipality and county.",
+        "B22": "Find 10 buildings in Kristiansand municipality within 50 metres of 200-year storm-surge areas, sorted by shortest distance first, and report both municipality and county.",
+        "B23": "Find 10 parcels in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by teigid ascending.",
+        "B24": "Find 10 parcels in Trondheim municipality larger than 5000 m² that intersect quick-clay hazard areas with high risk class, sorted by parcel area descending, and report both municipality and county.",
 
-        # Level 5: advanced multi-layer, distance, ranking, and top-k workflows.
-        # "B25": "Find 10 buildings in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by bygningid ascending.",
-        # "B26": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones, sorted by distance to the nearest quick-clay hazard zone ascending.",
-        # "B27": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones, sorted by distance to the nearest quick-clay hazard zone ascending.",
-        # "B28": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class and are closest to the municipality centroid, sorted by shortest distance first.",
-        # "B29": "List the five 1 km grid cells in Lillestrøm municipality with the highest number of parcels located in quick-clay hazard areas, sorted by parcel count descending.",
-        # "B30": "List the five municipalities in Finnmark county with the highest number of buildings in 200-year flood zones, sorted by count descending.",
+        #Level 5: advanced multi-layer, distance, ranking, and top-k workflows.
+        "B25": "Find 10 buildings in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by bygningid ascending.",
+        "B26": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones, sorted by distance to the nearest quick-clay hazard zone ascending.",
+        "B27": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones, sorted by distance to the nearest quick-clay hazard zone ascending.",
+        "B28": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class and are closest to the municipality centroid, sorted by shortest distance first.",
+        "B29": "List the five 1 km grid cells in Lillestrøm municipality with the highest number of parcels located in quick-clay hazard areas, sorted by parcel count descending.",
+        "B30": "List the five municipalities in Finnmark county with the highest number of buildings in 200-year flood zones, sorted by count descending.",
 
     }
     
-    model_ids = [ "gpt-5-mini"]
+
+
+
+
+
+    model_ids =  ["Mistral-Large-3"]
+    #model_ids =  ["gpt-5-mini"]
+
+
 
     params = ModelParams(
         temperature=0.0,
