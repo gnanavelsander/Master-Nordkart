@@ -1399,14 +1399,20 @@ async def store_run(run: EvalRun, results: list) -> str:
     embedding_active = any(s.get("retrieval_scope_active") for s in summary)
 
     try:
-        _update_queries_index(q_hash, run.query, summary, run.prompt_name, config_id, run.query_id)
-    except Exception as e:
-        logger.warning("Failed to update queries index: %s", e)
+        await loop.run_in_executor(
+            None,
+            lambda: _update_queries_index(q_hash, run.query, summary, run.prompt_name, config_id, run.query_id),
+        )
+    except Exception:
+        logger.error("Failed to update queries index for q_hash=%s", q_hash, exc_info=True)
 
     try:
-        _update_runs_index(q_hash, run_id, summary, run.prompt_name, config_id, embedding_active)
-    except Exception as e:
-        logger.warning("Failed to update runs index: %s", e)
+        await loop.run_in_executor(
+            None,
+            lambda: _update_runs_index(q_hash, run_id, summary, run.prompt_name, config_id, embedding_active),
+        )
+    except Exception:
+        logger.error("Failed to update runs index for q_hash=%s run_id=%s", q_hash, run_id, exc_info=True)
 
     seen_ids: set[str] = set()
     for doc in normalized_docs:
