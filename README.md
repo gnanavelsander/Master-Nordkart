@@ -26,7 +26,7 @@ Output: GeoJSON + table + model comparison
 #### Clone the project
 
 ```bash
-git clone https://github.com/MatinM-96/NordKart-MasterOppgave.git
+https://github.com/gnanavelsander/Master-Nordkart.git
 cd NordKart-MasterOppgave
 ```
 
