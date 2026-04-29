@@ -658,11 +658,19 @@ def _extract_agent_trace_from_run_logs(
     active_step_registry, _, _ = _collect_active_step_stats(run_logs)
     step_to_iteration: dict[str, int | None] = {}
 
+    _db_explore_tools = {
+        "tool_get_database_catalog",
+        "tool_get_available_schemas",
+        "tool_get_available_tables",
+        "tool_get_table_schema",
+    }
+    db_explore_counts: dict[str, int] = {}
+
     if not run_logs:
         return AgentTrace(
             tables_explored=[],
             tables_in_result=[],
-            databases_explored=[],
+            databases_explored={},
             databases_in_result=[],
             validated_before_exec=valid_sql,
             executed_successfully=executed,
@@ -672,10 +680,6 @@ def _extract_agent_trace_from_run_logs(
         )
 
     for run in run_logs:
-        for db in run.get("discovered_databases", []):
-            if db not in databases:
-                databases.append(db)
-
         for tbl in run.get("discovered_tables", []):
             if tbl not in tables:
                 tables.append(tbl)
@@ -687,6 +691,11 @@ def _extract_agent_trace_from_run_logs(
                 tool_name = t.get("tool")
                 if tool_name:
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
+                if tool_name in _db_explore_tools:
+                    db = (t.get("args") or {}).get("databaseName") or ""
+                    db = db.strip()
+                    if db:
+                        db_explore_counts[db] = db_explore_counts.get(db, 0) + 1
     for run in _active_plan_logs(run_logs):
         for entry in (run.get("iterations") or []):
             iter_no = entry.get("iteration")
@@ -734,7 +743,7 @@ def _extract_agent_trace_from_run_logs(
     return AgentTrace(
         tables_explored=tables,
         tables_in_result=tables_in_result,
-        databases_explored=databases,
+        databases_explored=db_explore_counts,
         databases_in_result=databases_in_result,
         validated_before_exec=validated,
         executed_successfully=executed_successfully,

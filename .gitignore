@@ -17,6 +17,7 @@ __pycache__/
 # ======================
 embeddings/layer_index.json
 req.txt
+backend/evaluation/research_reports/
 # ======================
 # Node / Next.js
 # ======================
@@ -77,5 +78,3 @@ test.py
 run_3
 
 AzureChatOpenAI.py
-.claude 
-.codex

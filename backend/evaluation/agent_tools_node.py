@@ -1031,8 +1031,7 @@ def _handle_discovery_tool(
         state["discovered_tables"] = _dedup(list(state.get("discovered_tables", [])) + tables)
 
     elif name == "tool_get_available_databases":
-        dbs = _extract_databases_from_result(parsed)
-        state["discovered_databases"] = _dedup(list(state.get("discovered_databases", [])) + dbs)
+        pass  # listing available databases is not the same as exploring them
 
     elif name == "tool_get_available_tables":
         tables = _extract_tables_from_available_tables_result(parsed)

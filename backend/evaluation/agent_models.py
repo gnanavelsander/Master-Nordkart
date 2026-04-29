@@ -15,7 +15,7 @@ class TokenUsage:
 class AgentTrace:
     tables_explored: list[str]
     tables_in_result: list[str]
-    databases_explored: list[str]
+    databases_explored: dict[str, int]
     
     databases_in_result: list[str]
     validated_before_exec: bool

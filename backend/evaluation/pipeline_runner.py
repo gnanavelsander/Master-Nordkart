@@ -198,7 +198,7 @@ async def agent(
         "last_execute_error": None,
         "last_empty_step": None,
         "discovered_tables": seeded_tables,
-        "discovered_databases": seeded_databases,
+        "discovered_databases": [],
         "valid_sql": False,
         "answer": "",
         "all_errors": [],
@@ -547,7 +547,7 @@ async def main():
     logger.setLevel(logging.DEBUG)
 
     queries = {
-        # Level 1: single-dataset grounding and simple municipality filters.
+        # # Level 1: single-dataset grounding and simple municipality filters.
         "B1": "Count all buildings in Kristiansand municipality.",
         "B2": "Find 10 parcels in Kristiansand municipality, sorted by teigid ascending.",
         "B3": "Find 10 buildings in Narvik municipality, sorted by bygningid ascending.",
@@ -574,9 +574,9 @@ async def main():
 
 
         # Level 4: multi-step spatial workflows with extra filters or reporting.
-        # "B19": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and have status FA, sorted by bygningid ascending.",
-        # "B20": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by bygningid ascending.",
-        # # "B21": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by teigid ascending.",
+        "B19": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and have status FA, sorted by bygningid ascending.",
+        "B20": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by bygningid ascending.",
+        "B21": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by teigid ascending.",
         "B22": "Find 10 buildings in Kristiansand municipality within 50 metres of 200-year storm-surge areas, sorted by shortest distance first, and report both municipality and county.",
         "B23": "Find 10 parcels in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by teigid ascending.",
         "B24": "Find 10 parcels in Trondheim municipality larger than 5000 m² that intersect quick-clay hazard areas with high risk class, sorted by parcel area descending, and report both municipality and county.",
@@ -596,8 +596,8 @@ async def main():
 
 
 
-    model_ids =  ["Mistral-Large-3"]
-    #model_ids =  ["gpt-5-mini"]
+    #model_ids =  ["Mistral-Large-3"]
+    model_ids =  ["functiongemma"]
 
 
 
