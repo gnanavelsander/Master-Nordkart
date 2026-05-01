@@ -120,11 +120,14 @@ def _update_queries_index(
     prompt_name: str,
     config_id: str,
     query_id: str | None = None,
+    embedding_active: bool = False,
     max_retries: int = 5,
 ):
     path = f"{src}/index.json"
     new_breakdown_keys = [
-        f"{s['model_id']}::{prompt_name}::{config_id}" for s in summary if s.get("model_id")
+        f"{s['model_id']}::emb::{prompt_name}::{config_id}" if embedding_active
+        else f"{s['model_id']}::{prompt_name}::{config_id}"
+        for s in summary if s.get("model_id")
     ]
 
     for attempt in range(max_retries):

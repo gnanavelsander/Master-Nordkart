@@ -1405,12 +1405,12 @@ async def store_run(run: EvalRun, results: list) -> str:
     #     },
     # )
 
-    embedding_active = any(s.get("retrieval_scope_active") for s in summary)
+    embedding_active = run.params.use_embeddings
 
     try:
         await loop.run_in_executor(
             None,
-            lambda: _update_queries_index(q_hash, run.query, summary, run.prompt_name, config_id, run.query_id),
+            lambda: _update_queries_index(q_hash, run.query, summary, run.prompt_name, config_id, run.query_id, embedding_active),
         )
     except Exception:
         logger.error("Failed to update queries index for q_hash=%s", q_hash, exc_info=True)

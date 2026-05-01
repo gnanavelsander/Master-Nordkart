@@ -547,36 +547,35 @@ async def main():
     logger.setLevel(logging.DEBUG)
 
     queries = {
-        # # Level 1: single-dataset grounding and simple municipality filters.
-        "B1": "Count all buildings in Kristiansand municipality.",
-        "B2": "Find 10 parcels in Kristiansand municipality, sorted by teigid ascending.",
-        "B3": "Find 10 buildings in Narvik municipality, sorted by bygningid ascending.",
-        "B4": "Count all parcels in Stavanger municipality.",
-        "B5": "Count all disputed parcels in Kristiansand municipality.",
-        "B6": "Count all buildings with status FA in Kristiansand municipality.",
+        # # # Level 1: single-dataset grounding and simple municipality filters.
+        # "B1": "Count all buildings in Kristiansand municipality.",
+        # "B2": "Find 10 parcels in Kristiansand municipality, sorted by teigid ascending.",
+        # "B3": "Find 10 buildings in Narvik municipality, sorted by bygningid ascending.",
+        # "B4": "Count all parcels in Stavanger municipality.",
+        # "B5": "Count all disputed parcels in Kristiansand municipality.",
+        # "B6": "Count all buildings with status FA in Kristiansand municipality.",
 
-        # Level 2: attribute filters, numeric filters, ordering, and direct constraints.
-        "B7": "Find 10 buildings with status FA in Stavanger municipality, sorted by bygningid ascending.",
-        "B8": "Find 10 parcels larger than 5000 m² in Drammen municipality, sorted by parcel area descending.",
-        "B9": "Find 10 parcels in Stavanger municipality that are located in agricultural land, sorted by teigid ascending.",
-        "B10": "Find 10 parcels in Kristiansand municipality that intersect 200-year storm-surge areas, sorted by teigid ascending.",
-        "B11": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas, sorted by teigid ascending.",
-        "B12": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones, sorted by parcel area descending.",
+        # # Level 2: attribute filters, numeric filters, ordering, and direct constraints.
+        # "B7": "Find 10 buildings with status FA in Stavanger municipality, sorted by bygningid ascending.",
+        # "B8": "Find 10 parcels larger than 5000 m² in Drammen municipality, sorted by parcel area descending.",
+        # "B9": "Find 10 parcels in Stavanger municipality that are located in agricultural land, sorted by teigid ascending.",
+        # "B10": "Find 10 parcels in Kristiansand municipality that intersect 200-year storm-surge areas, sorted by teigid ascending.",
+        # "B11": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas, sorted by teigid ascending.",
+        # "B12": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones, sorted by parcel area descending.",
 
-        # Level 3: two-dataset spatial predicates and simple spatial aggregation.
-        "B13": "Count all buildings in Narvik municipality that intersect snow-avalanche hazard areas.",
-        "B14": "Count all buildings in Drammen municipality that intersect 200-year flood zones.",
-        "B15": "Find 10 parcels in Drammen municipality that intersect 200-year flood zones, sorted by teigid ascending.",
-        "B16": "Count all buildings in Kristiansand municipality that intersect 200-year storm-surge areas.",
-        "B17": "Count all buildings in Trondheim municipality that intersect quick-clay hazard areas.",
-        "B18": "Count all 1 km grid cells in Kristiansand municipality that intersect 200-year storm-surge areas.",
+        # # # Level 3: two-dataset spatial predicates and simple spatial aggregation.
+        # "B13": "Count all buildings in Narvik municipality that intersect snow-avalanche hazard areas.",
+        # "B14": "Count all buildings in Drammen municipality that intersect 200-year flood zones.",
+        # "B15": "Find 10 parcels in Drammen municipality that intersect 200-year flood zones, sorted by teigid ascending.",
+        # "B16": "Count all buildings in Kristiansand municipality that intersect 200-year storm-surge areas.",
+        # "B17": "Count all buildings in Trondheim municipality that intersect quick-clay hazard areas.",
+        # "B18": "Count all 1 km grid cells in Kristiansand municipality that intersect 200-year storm-surge areas.",
 
+        # # # Level 4: multi-step spatial workflows with extra filters or reporting.
+        # "B19": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and have status FA, sorted by bygningid ascending.",
+        # "B20": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by bygningid ascending.",
+        # "B21": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by teigid ascending.",
 
-
-        # Level 4: multi-step spatial workflows with extra filters or reporting.
-        "B19": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and have status FA, sorted by bygningid ascending.",
-        "B20": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by bygningid ascending.",
-        "B21": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by teigid ascending.",
         "B22": "Find 10 buildings in Kristiansand municipality within 50 metres of 200-year storm-surge areas, sorted by shortest distance first, and report both municipality and county.",
         "B23": "Find 10 parcels in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by teigid ascending.",
         "B24": "Find 10 parcels in Trondheim municipality larger than 5000 m² that intersect quick-clay hazard areas with high risk class, sorted by parcel area descending, and report both municipality and county.",
@@ -594,11 +593,12 @@ async def main():
 
 
 
-
-
+  
     #model_ids =  ["Mistral-Large-3"]
-    model_ids =  ["functiongemma"]
+    #model_ids =  ["functiongemma"]
 
+    #model_ids =  ["gpt-5-mini"]
+    model_ids =  ["DeepSeek-V3.2"]
 
 
     params = ModelParams(
@@ -610,6 +610,7 @@ async def main():
         max_sql_repairs=2,
         max_step_retries=2,
         max_replans=2,
+        use_embeddings=True
     
     )
 

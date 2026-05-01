@@ -3,6 +3,7 @@
 
 import json
 import logging
+import os
 
 import duckdb
 import geopandas as gpd
@@ -25,10 +26,53 @@ from backend.mcp.server.step_storage import (
 
 logger = logging.getLogger(__name__)
 
+MAX_SPATIAL_TOOL_PAIR_CANDIDATES = int(
+    os.getenv("MAX_SPATIAL_TOOL_PAIR_CANDIDATES", "500000000")
+)
+
 
 def _normalize_step(step: dict, infer_action: str | None = None) -> dict:
     """Return the step payload unchanged so MCP validates one strict schema only."""
     return dict(step)
+
+
+def _stored_row_count(entry: dict) -> int:
+    row_count = entry.get("row_count")
+    if row_count is not None:
+        return int(row_count)
+    rows = entry.get("rows")
+    return len(rows) if isinstance(rows, list) else 0
+
+
+def _spatial_pair_guard(
+    step_no: int,
+    action: str,
+    left_entry: dict,
+    right_entry: dict,
+    left_source: int,
+    right_source: int,
+) -> str | None:
+    left_count = _stored_row_count(left_entry)
+    right_count = _stored_row_count(right_entry)
+    pair_count = left_count * right_count
+
+    if pair_count <= MAX_SPATIAL_TOOL_PAIR_CANDIDATES:
+        return None
+
+    return _err(
+        step_no,
+        action,
+        (
+            f"{action} input too large before GeoPandas execution: "
+            f"left step {left_source} has {left_count} rows and right step {right_source} "
+            f"has {right_count} rows ({pair_count} possible pairs). "
+            f"Limit is {MAX_SPATIAL_TOOL_PAIR_CANDIDATES} possible pairs. "
+            "To fix: re-query the larger step with a spatial bounding-box filter — "
+            "compute the bbox of the smaller result set and add "
+            "ST_Intersects(geom, ST_MakeEnvelope(minx, miny, maxx, maxy, srid)) "
+            "to that step's WHERE clause, then retry this spatial tool."
+        ),
+    )
 
 
 
@@ -248,6 +292,12 @@ async def execute_spatial_join_step(ctx: Context[ServerSession, AppContext], run
 
         left_entry = _get_step_entry(ctx, run_id, s.left_source)
         right_entry = _get_step_entry(ctx, run_id, s.right_source)
+        guard_error = _spatial_pair_guard(
+            step_no, "spatial_join", left_entry, right_entry, s.left_source, s.right_source
+        )
+        if guard_error:
+            return guard_error
+
         left_gdf = _to_gdf(_get_rows(ctx, run_id, s.left_source),
                            s.left_geom or left_entry.get("geom_col"), left_entry.get("crs"))
         right_gdf = _to_gdf(_get_rows(ctx, run_id, s.right_source),
@@ -366,6 +416,12 @@ async def execute_nearest_step(ctx: Context[ServerSession, AppContext], run_id: 
         s = PlanStep.model_validate(_normalize_step(step))
         left_entry = _get_step_entry(ctx, run_id, s.left_source)
         right_entry = _get_step_entry(ctx, run_id, s.right_source)
+        guard_error = _spatial_pair_guard(
+            step_no, "nearest", left_entry, right_entry, s.left_source, s.right_source
+        )
+        if guard_error:
+            return guard_error
+
         left_gdf = _to_gdf(_get_rows(ctx, run_id, s.left_source),
                            s.left_geom or left_entry.get("geom_col"), left_entry.get("crs"))
         right_gdf = _to_gdf(_get_rows(ctx, run_id, s.right_source),
@@ -406,6 +462,12 @@ async def execute_distance_step(ctx: Context[ServerSession, AppContext], run_id:
         s = PlanStep.model_validate(_normalize_step(step))
         left_entry = _get_step_entry(ctx, run_id, s.left_source)
         right_entry = _get_step_entry(ctx, run_id, s.right_source)
+        guard_error = _spatial_pair_guard(
+            step_no, "distance", left_entry, right_entry, s.left_source, s.right_source
+        )
+        if guard_error:
+            return guard_error
+
         left_gdf = _to_gdf(_get_rows(ctx, run_id, s.left_source),
                            s.left_geom or left_entry.get("geom_col"), left_entry.get("crs"))
         right_gdf = _to_gdf(_get_rows(ctx, run_id, s.right_source),
@@ -573,6 +635,11 @@ async def execute_clip_step(ctx: Context[ServerSession, AppContext], run_id: str
         s = PlanStep.model_validate(_normalize_step(step))
         left_entry = _get_step_entry(ctx, run_id, s.left_source)
         right_entry = _get_step_entry(ctx, run_id, s.right_source)
+        guard_error = _spatial_pair_guard(
+            step_no, "clip", left_entry, right_entry, s.left_source, s.right_source
+        )
+        if guard_error:
+            return guard_error
         left_gdf = _to_gdf(_get_rows(ctx, run_id, s.left_source),
                            s.left_geom or left_entry.get("geom_col"), left_entry.get("crs"))
         right_gdf = _to_gdf(_get_rows(ctx, run_id, s.right_source),
@@ -646,6 +713,11 @@ async def execute_intersection_step(ctx: Context[ServerSession, AppContext], run
         s = PlanStep.model_validate(_normalize_step(step))
         left_entry = _get_step_entry(ctx, run_id, s.left_source)
         right_entry = _get_step_entry(ctx, run_id, s.right_source)
+        guard_error = _spatial_pair_guard(
+            step_no, "intersection", left_entry, right_entry, s.left_source, s.right_source
+        )
+        if guard_error:
+            return guard_error
         left_gdf = _to_gdf(_get_rows(ctx, run_id, s.left_source),
                            s.left_geom or left_entry.get("geom_col"), left_entry.get("crs"))
         right_gdf = _to_gdf(_get_rows(ctx, run_id, s.right_source),
@@ -685,6 +757,11 @@ async def execute_difference_step(ctx: Context[ServerSession, AppContext], run_i
         s = PlanStep.model_validate(_normalize_step(step))
         left_entry = _get_step_entry(ctx, run_id, s.left_source)
         right_entry = _get_step_entry(ctx, run_id, s.right_source)
+        guard_error = _spatial_pair_guard(
+            step_no, "difference", left_entry, right_entry, s.left_source, s.right_source
+        )
+        if guard_error:
+            return guard_error
         left_gdf = _to_gdf(_get_rows(ctx, run_id, s.left_source),
                            s.left_geom or left_entry.get("geom_col"), left_entry.get("crs"))
         right_gdf = _to_gdf(_get_rows(ctx, run_id, s.right_source),

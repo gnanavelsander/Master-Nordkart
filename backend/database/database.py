@@ -59,7 +59,7 @@ class PoolManager:
                 min_size=1,
                 max_size=3,
                 timeout=10,
-                command_timeout=120,
+                command_timeout=300,
                 max_inactive_connection_lifetime=300,
             )
 
