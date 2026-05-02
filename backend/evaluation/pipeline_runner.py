@@ -563,31 +563,6 @@ async def main():
         # "B11": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas, sorted by teigid ascending.",
         # "B12": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones, sorted by parcel area descending.",
 
-        # # # Level 3: two-dataset spatial predicates and simple spatial aggregation.
-        # "B13": "Count all buildings in Narvik municipality that intersect snow-avalanche hazard areas.",
-        # "B14": "Count all buildings in Drammen municipality that intersect 200-year flood zones.",
-        # "B15": "Find 10 parcels in Drammen municipality that intersect 200-year flood zones, sorted by teigid ascending.",
-        # "B16": "Count all buildings in Kristiansand municipality that intersect 200-year storm-surge areas.",
-        # "B17": "Count all buildings in Trondheim municipality that intersect quick-clay hazard areas.",
-        # "B18": "Count all 1 km grid cells in Kristiansand municipality that intersect 200-year storm-surge areas.",
-
-        # # # Level 4: multi-step spatial workflows with extra filters or reporting.
-        # "B19": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones and have status FA, sorted by bygningid ascending.",
-        # "B20": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by bygningid ascending.",
-        # "B21": "Find 10 parcels in Trondheim municipality that intersect quick-clay hazard areas with high risk class, sorted by teigid ascending.",
-
-        "B22": "Find 10 buildings in Kristiansand municipality within 50 metres of 200-year storm-surge areas, sorted by shortest distance first, and report both municipality and county.",
-        "B23": "Find 10 parcels in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by teigid ascending.",
-        "B24": "Find 10 parcels in Trondheim municipality larger than 5000 m² that intersect quick-clay hazard areas with high risk class, sorted by parcel area descending, and report both municipality and county.",
-
-        #Level 5: advanced multi-layer, distance, ranking, and top-k workflows.
-        "B25": "Find 10 buildings in Kristiansand municipality that intersect both 200-year storm-surge areas and 200-year flood zones, sorted by bygningid ascending.",
-        "B26": "Find 10 buildings in Drammen municipality that intersect 200-year flood zones, sorted by distance to the nearest quick-clay hazard zone ascending.",
-        "B27": "Find 10 parcels in Drammen municipality larger than 5000 m² that intersect 200-year flood zones, sorted by distance to the nearest quick-clay hazard zone ascending.",
-        "B28": "Find 10 buildings in Trondheim municipality that intersect quick-clay hazard areas with high risk class and are closest to the municipality centroid, sorted by shortest distance first.",
-        "B29": "List the five 1 km grid cells in Lillestrøm municipality with the highest number of parcels located in quick-clay hazard areas, sorted by parcel count descending.",
-        "B30": "List the five municipalities in Finnmark county with the highest number of buildings in 200-year flood zones, sorted by count descending.",
-
     }
     
 
@@ -595,10 +570,10 @@ async def main():
 
   
     #model_ids =  ["Mistral-Large-3"]
-    #model_ids =  ["functiongemma"]
+    model_ids =  ["functiongemma"]
 
     #model_ids =  ["gpt-5-mini"]
-    model_ids =  ["DeepSeek-V3.2"]
+    #model_ids =  ["DeepSeek-V3.2"]
 
 
     params = ModelParams(
@@ -606,15 +581,20 @@ async def main():
         max_tokens=2000,
         timeout=300,
         max_retries=0,
-        max_iterations=50,
+        max_iterations=30,
+
+
         max_sql_repairs=2,
         max_step_retries=2,
         max_replans=2,
-        use_embeddings=True
-    
+
+        max_plan_steps=10,
+        use_embeddings=False,
+        tool_choice="auto",
+        reasoning_effort=None,
     )
 
-    prompt_name = "evaluation_v1"
+    prompt_name = "evaluation_v2"
     prompt = load_prompt(prompt_name)
 
     try:

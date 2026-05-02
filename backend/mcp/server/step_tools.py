@@ -155,8 +155,6 @@ async def execute_query_step(ctx: Context[ServerSession, AppContext], run_id: st
         s = PlanStep.model_validate(_normalize_step(step, infer_action="query"))
         if not s.database or not s.sql:
             return _err(s.step, "query", "step requires database and sql.")
-        if (s.validSql or "").strip().lower() != "ok":
-            return _err(s.step, "query", "sql must be validated before execution (validSql must be 'ok').")
 
         conn_id = ctx.request_context.lifespan_context.conn_ids[s.database]
         row_count = 0

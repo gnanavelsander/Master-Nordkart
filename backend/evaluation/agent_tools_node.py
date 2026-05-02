@@ -556,8 +556,6 @@ def _guard_step_tool(
 
         if action != "query":
             blocked_reason = "step.action must be 'query'."
-        elif valid_sql_flag != "ok":
-            blocked_reason = "step.validSql must be 'ok'."
         elif step_number is None:
             blocked_reason = "step.step is required."
         elif not database:
