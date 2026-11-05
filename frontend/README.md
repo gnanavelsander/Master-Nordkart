@@ -11,9 +11,11 @@ This Next.js / React interface connects natural-language questions to the GIS ag
 | [ResultTable.tsx](src/app/ResultTable.tsx) | Tabular result display. |
 | [backend/app.py](../backend/app.py) | FastAPI endpoints and conversion of agent results to the UI response. |
 
-The page sends `POST /query` with the question, selected models and prompt, and optional map/conversation context. It also uses `GET /models` and `GET` / `POST /prompt/{name}`. The selected prompt defaults to `prompt_v4`; saving a prompt writes to the backend's prompt file.
+In `page.tsx`, `sendToBackend()` calls `fetchAssistant()` to send `POST /query` with the question, selected models and prompt, and optional map/conversation context. In `backend/app.py`, `run_query()` prepares that context and starts the shared agent through `run_all()`. `_serialise()` returns each model's answer, rows, GeoJSON, SQL, and logs. See the [request walkthrough](../docs/architecture.md#backend-and-interface-from-question-to-visible-result) for the complete path.
 
-The map loads through `MapClient.tsx` to keep Leaflet in the browser. Geometry results can be shown on the map; tabular results can be inspected in the table. SQL and log panels expose intermediate work. Execution status indicators do not independently verify answer correctness.
+React keeps the question, selected models, map context, and result views in page state. `MapClient.tsx` loads `MapView` without server-side rendering so Leaflet can run in the browser. `showOnMap()` passes a model's GeoJSON to the map, while `showTable()` passes `result_data.rows` to `ResultTable`. These complementary views let a reader inspect spatial placement and attributes without reducing the analysis to the generated answer text. SQL and log panels expose intermediate work; execution status indicators do not independently verify correctness.
+
+The page also uses `GET /models` and `GET` / `POST /prompt/{name}`. Its selected prompt defaults to `prompt_v4`; saving a prompt writes to the backend's prompt file. Map drawing and feature selection supply context for subsequent questions rather than executing analyses directly in the browser.
 
 ## Development context
 

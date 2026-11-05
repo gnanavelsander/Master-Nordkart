@@ -4,6 +4,22 @@
 
 The project developed an agentic GIS system and evaluated how pretrained language models operated within it. The experiments concern inference, prompting, tool use, and optional retrieval, not training or fine-tuning models.
 
+## Evaluation code and evidence
+
+The evaluation path records how the agent reached an answer, not just the answer text. This matters for GIS: a run may select the wrong hazard layer, omit a filter, or stop after one query while still producing plausible output. The recorded plan, calls, errors, and results make those stages inspectable.
+
+| Start with | What it does and why it is useful |
+| --- | --- |
+| `main()` in [pipeline_runner.py](../backend/evaluation/pipeline_runner.py) | Defines `queries`, `model_ids`, `ModelParams`, and `prompt_name`. This is the place to identify the actual batch conditions: B25–B30 and one model are currently active; B1–B24 remain as commented task definitions. |
+| `EvalRun`, `PipelineResult`, and `AgentRunError` in [agent_models.py](../backend/evaluation/agent_models.py) | Represent the requested experiment, each model's outcome, and failures with state snapshots. Keeping failure evidence allows unsuccessful runs to be inspected alongside completed ones. |
+| `run_all()` and `agent()` in [pipeline_runner.py](../backend/evaluation/pipeline_runner.py) | Run selected models sequentially through the same graph as the interactive API. The graph's `_model_node()` and tool node's `_build_tool_message_and_log()` / `_build_step_event()` record messages, calls, validation/execution events, latency, and token usage. See [agent_graph.py](../backend/evaluation/agent_graph.py) and [agent_tools_node.py](../backend/evaluation/agent_tools_node.py). |
+| `extract_agent_trace()`, `_summary_metrics()`, `_final_failure_info()`, and `_latency_breakdown()` in [reporting.py](../backend/evaluation/reporting.py) | Derive which databases/tables were explored or used, tool/repair activity, failure categories, and time spent. These explain partial progress and failure mechanisms beyond a single completion flag. `_print_summary()` and `_print_details()` expose diagnostics in the console. |
+| `_run_outcome_from_logs()` in [agent_helpers.py](../backend/evaluation/prompts/agent_helpers.py) | Derives execution and task-completion outcomes from recorded steps. It provides evidence about workflow progress; it is not the thesis's full reference-answer scoring procedure. |
+| `store_run()` in [reporting.py](../backend/evaluation/reporting.py) | Groups output by query hash, prompt, run ID, and model. Writes configuration plus separate `logs.json` and `result.json` artifacts, preserving detailed events and derived outcomes for later inspection. |
+| `upload()`, `_update_queries_index()`, and `_update_runs_index()` in [AzureBlobStorage.py](../backend/storage/AzureBlobStorage.py) | Persist artifacts and lookup indexes in Azure Blob Storage so runs can be located and compared after execution. The interactive `/query` endpoint does not call `store_run()`. |
+
+Those stored run artifacts are not included in this checkout. The local code exposes execution diagnostics, whereas the thesis additionally compares outputs and process decisions against task-specific reference requirements and performs repeated-run statistical analysis. The [checkout comparison](#what-this-checkout-can-support) gives the exact differences; the [findings below](#selected-findings) retain chapter and table references.
+
 ## Sources and supplementary material
 
 The findings below are from **Matin Mohammadi and Sander Gnanavel, _A Benchmark-Based Evaluation of Large Language Models in Agentic Multi-Step GIS Workflows_, University of Agder, 2026**, using the report supplied for this documentation update. References use the report's printed page numbers, not PDF viewer page indices. The report PDF is not included or published here.
