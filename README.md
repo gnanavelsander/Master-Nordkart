@@ -6,7 +6,7 @@ This master's project turns natural-language questions into geographic analyses 
 
 **[Watch the master's project demo](https://drive.google.com/file/d/1PzHlpxn4E91q0KO5v49n1uM23W8GC5mV/view?usp=sharing)**
 
-The video shows the prototype from the master's project. Full execution requires model access and external geographic data that are not included here; the video and code provide a way to review the project without those services.
+The video shows the prototype from the master's project. Full execution requires model access and external geographic data that are not included here. The video and code provide a way to review the project without those services.
 
 ## Follow a question through the system
 
@@ -27,7 +27,7 @@ flowchart TD
     RESULT --> VIEW["Answer, map or table, SQL and logs"]
 ```
 
-LangGraph keeps the plan and execution state across model/tool turns. MCP connects those turns to concrete database and analysis tools. PostgreSQL/PostGIS serves the geographic data; memory and DuckDB retain intermediate results for later steps. The [architecture guide](docs/architecture.md) explains each component's role and follows the actual functions involved.
+LangGraph keeps the plan and execution state across model/tool turns. MCP connects those turns to concrete database and analysis tools. PostgreSQL/PostGIS serves the geographic data, while memory and DuckDB retain intermediate results for later steps. The [architecture guide](docs/architecture.md) explains each component's role and follows the actual functions involved.
 
 ## Repository map
 
@@ -49,8 +49,8 @@ LangGraph keeps the plan and execution state across model/tool turns. MCP connec
 2. **Understand the agent:** `agent()` in [pipeline_runner.py](backend/evaluation/pipeline_runner.py), `AgentState` in [agent_models.py](backend/evaluation/agent_models.py), and `_build_agent_graph()` in [agent_graph.py](backend/evaluation/agent_graph.py). These connect initialization, state, and control flow.
 3. **Trace one tool call:** `_tools_node()` in [agent_tools_node.py](backend/evaluation/agent_tools_node.py), the [model-facing wrappers](backend/tools/langchain_tools.py), and `execute_query_step()` in [step_tools.py](backend/mcp/server/step_tools.py). Follow the [MCP walkthrough](docs/architecture.md#mcp-the-tool-call-path) for the intervening client/server calls.
 4. **Follow dependent steps:** `_save_rows()` / `_get_rows()` in [step_storage.py](backend/mcp/server/step_storage.py) and `execute_spatial_join_step()` in [step_tools.py](backend/mcp/server/step_tools.py). These explain how results from separate sources become one analysis.
-5. **Inspect evaluation evidence:** `main()` in [pipeline_runner.py](backend/evaluation/pipeline_runner.py) selects tasks/models; `store_run()` in [reporting.py](backend/evaluation/reporting.py) records the results. The [evaluation guide](docs/evaluation.md) separates execution diagnostics from the thesis's reference-answer assessment and reported findings.
+5. **Inspect evaluation evidence:** `main()` in [pipeline_runner.py](backend/evaluation/pipeline_runner.py) selects tasks and models. `store_run()` in [reporting.py](backend/evaluation/reporting.py) records the results. The [evaluation guide](docs/evaluation.md) separates execution diagnostics from the thesis's reference-answer assessment and reported findings.
 
-The project develops an agent system and evaluates pretrained models, rather than training new models. A central finding is that completing the workflow does not guarantee a correct spatial answer; the [evaluation guide](docs/evaluation.md#technical-completion-was-not-semantic-correctness) gives the documented example and its thesis reference.
+The project develops an agent system and evaluates pretrained models. It does not train new models. Completing the workflow does not guarantee a correct spatial answer, as the example in the [evaluation guide](docs/evaluation.md#technical-completion-was-not-semantic-correctness) shows.
 
-For interface details, see the [frontend guide](frontend/README.md). For dependencies and retained development configuration, see the [runtime notes](docs/runtime-context.md). This research prototype was reviewed through source and documentation; the full system was not rerun for this update.
+For interface details, see the [frontend guide](frontend/README.md). For dependencies and retained development configuration, see the [runtime notes](docs/runtime-context.md).
