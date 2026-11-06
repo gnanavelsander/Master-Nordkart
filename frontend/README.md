@@ -13,9 +13,9 @@ This Next.js / React interface connects natural-language questions to the GIS ag
 
 In `page.tsx`, `sendToBackend()` calls `fetchAssistant()` to send `POST /query` with the question, selected models and prompt, and optional map/conversation context. In `backend/app.py`, `run_query()` prepares that context and starts the shared agent through `run_all()`. `_serialise()` returns each model's answer, rows, GeoJSON, SQL, and logs. See the [request walkthrough](../docs/architecture.md#backend-and-interface-from-question-to-visible-result) for the complete path.
 
-React keeps the question, selected models, map context, and result views in page state. `MapClient.tsx` loads `MapView` without server-side rendering so Leaflet can run in the browser. `showOnMap()` passes a model's GeoJSON to the map, while `showTable()` passes `result_data.rows` to `ResultTable`. These complementary views let a reader inspect spatial placement and attributes without reducing the analysis to the generated answer text. SQL and log panels expose intermediate work; execution status indicators do not independently verify correctness.
+React keeps the question, selected models, map context, and result views in page state. `MapClient.tsx` loads `MapView` without server-side rendering so Leaflet can run in the browser. `showOnMap()` passes a model's GeoJSON to the map, while `showTable()` passes `result_data.rows` to `ResultTable`. SQL and log panels show intermediate work. Execution status indicators do not independently verify correctness.
 
-The page also uses `GET /models` and `GET` / `POST /prompt/{name}`. Its selected prompt defaults to `prompt_v4`; saving a prompt writes to the backend's prompt file. Map drawing and feature selection supply context for subsequent questions rather than executing analyses directly in the browser.
+The page also uses `GET /models` and `GET` / `POST /prompt/{name}`. Its selected prompt defaults to `prompt_v4`. Saving a prompt writes to the backend's prompt file. Map drawing and feature selection supply context for subsequent questions rather than executing analyses directly in the browser.
 
 ## Development context
 
